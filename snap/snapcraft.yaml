@@ -1,0 +1,61 @@
+name: screenrec-lite
+version: '2.1.0'
+summary: Simple screen and system audio recorder
+description: |
+  A minimal screen and audio recorder for Linux with GUI, system audio routing,
+  and app-level control for Zoom, Firefox, and more.
+website: https://github.com/cagustinenriquez/minimal-screen-recorder
+source-code: https://github.com/cagustinenriquez/minimal-screen-recorder
+issues: https://github.com/cagustinenriquez/minimal-screen-recorder/issues
+license: MIT
+
+base: core24
+grade: stable
+confinement: strict
+platforms:
+  amd64:
+
+apps:
+  screenrec:
+    command: bin/python3 $SNAP/app/app.py
+    desktop: app/screenrec.desktop
+    extensions: [gnome]
+    plugs:
+      - home
+      - audio-playback
+      - audio-record
+      - pulseaudio
+      - x11
+      - wayland
+      - desktop
+      - desktop-legacy
+
+parts:
+  # Python runtime + libraries (no project install; the app is plain .py files)
+  deps:
+    plugin: python
+    source: snap/local/empty
+    python-packages:
+      - mss>=10.0.0
+      - numpy>=2.0
+      - opencv-python-headless>=4.8
+    stage-packages:
+      - python3-tk
+      - ffmpeg
+      - pulseaudio-utils
+
+  app:
+    plugin: dump
+    source: .
+    organize:
+      '*.py': app/
+      camera.png: app/
+      snap/gui/screenrec.desktop: app/screenrec.desktop
+    stage:
+      - app/*.py
+      - app/camera.png
+      - app/screenrec.desktop
+    prime:
+      - -app/test*.py
+      - -app/setup.py
+      - -app/main.py

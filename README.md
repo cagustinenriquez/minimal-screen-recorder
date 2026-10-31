@@ -83,9 +83,9 @@ snapcraft --destructive-mode
 > Only required for maintainers
 
 ```bash
-snapcraft upload screenrec-lite_1.0.0_amd64.snap --release=stable
+snapcraft upload screenrec-lite_*_amd64.snap --release=stable
 ```
 
 📝 License
 
-MIT © Carlos Agustín Enríquez (https://github.com/agustinenriquez)
+MIT © Carlos Agustín Enríquez (https://github.com/cagustinenriquez)

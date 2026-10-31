@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Screen Recorder
+Comment=Minimal screen and audio recorder
+Exec=screenrec
+Icon=${SNAP}/meta/gui/camera.png
+Terminal=false
+Type=Application
+Categories=AudioVideo;
+StartupWMClass=screenrec

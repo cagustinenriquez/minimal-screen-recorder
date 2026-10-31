@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -51,7 +52,9 @@ class RecorderConfig:
                 "discord",
             ]
         if not self.output_directory:
-            self.output_directory = str(Path.home() / "Videos" / "ScreenRecorder")
+            # Inside a snap, Path.home() is the snap's private dir; use the real home.
+            home = Path(os.environ.get("SNAP_REAL_HOME") or Path.home())
+            self.output_directory = str(home / "Videos" / "ScreenRecorder")
 
 
 class ConfigManager:
