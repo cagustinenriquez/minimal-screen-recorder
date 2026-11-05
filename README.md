@@ -22,12 +22,14 @@ sudo snap install screenrec-lite
 
 Or open the **Ubuntu Software Center** and search **“Screen Recorder”**.
 
+The snap includes everything it needs (FFmpeg, PulseAudio tools, Tk), so there is nothing else to install.
+
 🏁 Usage
 
 After installing:
 
 ```bash
-screenrec
+screenrec-lite.screenrec
 ```
 
 Or launch it from your system menu — look for **“Screen Recorder”** with the camera icon.
@@ -42,11 +44,13 @@ sudo snap refresh screenrec-lite
 
 🐙 Development
 
+Running from source needs FFmpeg, PulseAudio tools (`pactl`) and Tk (`python3-tk`) on your system; `./install_deps.sh` installs them.
+
 Clone this repo and build locally:
 
 **Using UV (recommended):**
 ```bash
-git clone https://github.com/m0tz/minimal-screen-recorder.git
+git clone https://github.com/cagustinenriquez/minimal-screen-recorder.git
 cd minimal-screen-recorder
 ./install_deps.sh  # Install system dependencies (FFmpeg, PulseAudio, etc.)
 uv run python ui.py
@@ -54,7 +58,7 @@ uv run python ui.py
 
 **Using traditional venv:**
 ```bash
-git clone https://github.com/m0tz/minimal-screen-recorder.git
+git clone https://github.com/cagustinenriquez/minimal-screen-recorder.git
 cd minimal-screen-recorder
 ./install_deps.sh  # Install system dependencies (FFmpeg, PulseAudio, etc.)
 python3 -m venv env && source env/bin/activate
@@ -70,10 +74,11 @@ pytest
 
 🧰 Packaging
 
-🔹 Build Snap (local dev mode):
+🔹 Build the snap (needs LXD; the recipe is in `snap/snapcraft.yaml`):
 
 ```bash
-snapcraft --destructive-mode
+snapcraft pack
+sudo snap install --dangerous ./screenrec-lite_*_amd64.snap
 ```
 
 🔹 Build `.deb` (coming soon)
