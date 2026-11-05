@@ -20,6 +20,11 @@ apps:
     command: bin/python3 $SNAP/app/app.py
     desktop: app/screenrec.desktop
     extensions: [gnome]
+    environment:
+      # The venv's python is the base snap's; point it at the staged tkinter and Tcl/Tk.
+      PYTHONPATH: $SNAP/usr/lib/python3.12/lib-dynload:$SNAP/usr/lib/python3.12
+      TCL_LIBRARY: $SNAP/usr/share/tcltk/tcl8.6
+      TK_LIBRARY: $SNAP/usr/share/tcltk/tk8.6
     plugs:
       - home
       - audio-playback
