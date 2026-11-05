@@ -25,6 +25,8 @@ apps:
       PYTHONPATH: $SNAP/usr/lib/python3.12/lib-dynload:$SNAP/usr/lib/python3.12
       TCL_LIBRARY: $SNAP/usr/share/tcltk/tcl8.6
       TK_LIBRARY: $SNAP/usr/share/tcltk/tk8.6
+      # ffmpeg needs libblas/liblapack, which Debian keeps in subdirs (alternatives).
+      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$LD_LIBRARY_PATH
     plugs:
       - home
       - audio-playback
