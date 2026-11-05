@@ -500,15 +500,21 @@ class RecorderApp:
         self._build_ui()
         self._setup_keyboard_shortcuts()
 
-        # Update window settings
-        if self.config.remember_window_position:
+        # Size the window to its contents (a fixed size cut off the buttons)
+        self._fit_window(restore_position=self.config.remember_window_position)
+
+    def _fit_window(self, restore_position: bool = False):
+        """Resize the window so every widget is fully visible."""
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth()
+        height = self.root.winfo_reqheight()
+        self.root.minsize(width, height)
+        if restore_position:
             self.root.geometry(
-                f"{self.config.window_width}x{self.config.window_height}+{self.config.window_x}+{self.config.window_y}"
+                f"{width}x{height}+{self.config.window_x}+{self.config.window_y}"
             )
         else:
-            self.root.geometry(
-                f"{self.config.window_width}x{self.config.window_height}"
-            )
+            self.root.geometry(f"{width}x{height}")
 
     def _check_dependencies(self):
         """Check system dependencies."""
@@ -590,9 +596,27 @@ class RecorderApp:
         self.toggle_sources_btn.pack(side=tk.LEFT, padx=(10, 0))
         row += 1
 
-        # Audio apps checkboxes
-        self.apps_frame = tk.Frame(main_frame, bg="#1e1e1e")
-        self.apps_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=5)
+        # Audio apps checkboxes, in a scrollable box
+        self.sources_box = tk.Frame(main_frame, bg="#1e1e1e")
+        self.sources_box.grid(row=row, column=0, columnspan=3, sticky="ew", pady=5)
+        self.sources_canvas = tk.Canvas(
+            self.sources_box, bg="#1e1e1e", highlightthickness=0, bd=0
+        )
+        sources_scrollbar = ttk.Scrollbar(
+            self.sources_box, orient=tk.VERTICAL, command=self.sources_canvas.yview
+        )
+        self.sources_canvas.configure(yscrollcommand=sources_scrollbar.set)
+        self.sources_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sources_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.apps_frame = tk.Frame(self.sources_canvas, bg="#1e1e1e")
+        self.sources_canvas.create_window((0, 0), window=self.apps_frame, anchor="nw")
+        self.apps_frame.bind(
+            "<Configure>",
+            lambda e: self.sources_canvas.configure(
+                scrollregion=self.sources_canvas.bbox("all")
+            ),
+        )
 
         available_apps = self.config_manager.get_available_apps()
         for idx, app in enumerate(available_apps):
@@ -609,8 +633,17 @@ class RecorderApp:
             chk.grid(row=idx // 3, column=idx % 3, sticky="w", padx=5)
             self.app_checkboxes[app] = var
 
+        # Show about 5 rows at a time; scroll for the rest
+        self.apps_frame.update_idletasks()
+        row_height = max(chk.winfo_reqheight(), 1) if available_apps else 24
+        self.sources_canvas.configure(
+            width=self.apps_frame.winfo_reqwidth(),
+            height=min(self.apps_frame.winfo_reqheight(), row_height * 5),
+        )
+        self._bind_mousewheel(self.sources_box)
+
         # Hide sources by default
-        self.apps_frame.grid_remove()
+        self.sources_box.grid_remove()
         row += 1
 
         # Status and progress
@@ -620,9 +653,12 @@ class RecorderApp:
         self.status_label.grid(row=row, column=0, columnspan=3, sticky="w", pady=15)
         row += 1
 
-        # Control buttons
+        # Control buttons: recording controls on one row, the rest below
         buttons_frame = tk.Frame(main_frame, bg="#1e1e1e")
-        buttons_frame.grid(row=row, column=0, columnspan=3, pady=10)
+        buttons_frame.grid(row=row, column=0, columnspan=3, pady=(10, 5))
+        row += 1
+        extra_buttons_frame = tk.Frame(main_frame, bg="#1e1e1e")
+        extra_buttons_frame.grid(row=row, column=0, columnspan=3, pady=(0, 10))
 
         self.start_btn = tk.Button(
             buttons_frame,
@@ -660,12 +696,15 @@ class RecorderApp:
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
 
         self.settings_btn = tk.Button(
-            buttons_frame, text="⚙️ Settings", command=self.open_settings, **btn_style
+            extra_buttons_frame,
+            text="⚙️ Settings",
+            command=self.open_settings,
+            **btn_style,
         )
         self.settings_btn.pack(side=tk.LEFT, padx=5)
 
         self.open_file_btn = tk.Button(
-            buttons_frame,
+            extra_buttons_frame,
             text="📂 Open Recording",
             command=self.open_last_recording,
             **btn_style,
@@ -683,7 +722,15 @@ class RecorderApp:
 
         # Keyboard shortcuts help
         help_text = "Shortcuts: F1=Start/Stop, F2=Pause, F3=Settings, F4=Open Recording, F5=Cancel, Esc=Stop"
-        tk.Label(main_frame, text=help_text, **label_style, font=("Arial", 8)).grid(
+        buttons_frame.update_idletasks()
+        tk.Label(
+            main_frame,
+            text=help_text,
+            **label_style,
+            font=("Arial", 8),
+            justify=tk.LEFT,
+            wraplength=max(buttons_frame.winfo_reqwidth(), 300),
+        ).grid(
             row=row, column=0, columnspan=3, sticky="w", pady=(20, 0)
         )
 
@@ -708,14 +755,42 @@ class RecorderApp:
         """Toggle the visibility of audio sources checkboxes."""
         if self.sources_visible.get():
             # Hide sources
-            self.apps_frame.grid_remove()
+            self.sources_box.grid_remove()
             self.sources_visible.set(False)
             self.toggle_sources_btn.config(text="Show Sources")
         else:
             # Show sources
-            self.apps_frame.grid()
+            self.sources_box.grid()
             self.sources_visible.set(True)
             self.toggle_sources_btn.config(text="Hide Sources")
+        # Grow or shrink the window to fit, keeping it where it is
+        self.root.update_idletasks()
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        self._fit_window()
+        self.root.geometry(f"+{x}+{y}")
+
+    def _bind_mousewheel(self, widget):
+        """Scroll the sources list with the mouse wheel while hovering it."""
+
+        def on_wheel(event):
+            if event.num == 4 or getattr(event, "delta", 0) > 0:
+                self.sources_canvas.yview_scroll(-1, "units")
+            elif event.num == 5 or getattr(event, "delta", 0) < 0:
+                self.sources_canvas.yview_scroll(1, "units")
+            return "break"
+
+        def enable(_event):
+            self.root.bind_all("<MouseWheel>", on_wheel)
+            self.root.bind_all("<Button-4>", on_wheel)
+            self.root.bind_all("<Button-5>", on_wheel)
+
+        def disable(_event):
+            self.root.unbind_all("<MouseWheel>")
+            self.root.unbind_all("<Button-4>")
+            self.root.unbind_all("<Button-5>")
+
+        widget.bind("<Enter>", enable)
+        widget.bind("<Leave>", disable)
 
     def _log(self, msg: str):
         """Update log display."""
@@ -1431,7 +1506,7 @@ class RecorderApp:
 
 def main():
     """Main application entry point."""
-    root = tk.Tk()
+    root = tk.Tk(className="screenrec-lite")
     app = RecorderApp(root)
 
     # Set up window close handler

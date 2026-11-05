@@ -29,7 +29,7 @@ The snap includes everything it needs (FFmpeg, PulseAudio tools, Tk), so there i
 After installing:
 
 ```bash
-screenrec-lite.screenrec
+screenrec-lite
 ```
 
 Or launch it from your system menu — look for **“Screen Recorder”** with the camera icon.

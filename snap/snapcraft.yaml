@@ -16,9 +16,9 @@ platforms:
   amd64:
 
 apps:
-  screenrec:
+  screenrec-lite:
     command: bin/python3 $SNAP/app/app.py
-    desktop: app/screenrec.desktop
+    desktop: app/screenrec-lite.desktop
     extensions: [gnome]
     environment:
       # The venv's python is the base snap's; point it at the staged tkinter and Tcl/Tk.
@@ -57,11 +57,11 @@ parts:
     organize:
       '*.py': app/
       camera.png: app/
-      snap/gui/screenrec.desktop: app/screenrec.desktop
+      snap/gui/screenrec-lite.desktop: app/screenrec-lite.desktop
     stage:
       - app/*.py
       - app/camera.png
-      - app/screenrec.desktop
+      - app/screenrec-lite.desktop
     prime:
       - -app/test*.py
       - -app/setup.py

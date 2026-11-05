@@ -522,7 +522,7 @@ except ImportError as e:
 
     def main():
         """Fallback main function for basic mode."""
-        root = tk.Tk()
+        root = tk.Tk(className="screenrec-lite")
         RecorderApp(root)
         root.mainloop()
 
