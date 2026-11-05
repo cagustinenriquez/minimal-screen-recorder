@@ -1,6 +1,7 @@
 """Enhanced UI for the screen recorder with better UX and controls."""
 
 import subprocess
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -917,33 +918,21 @@ class RecorderApp:
 
                 self.audio_file = f"temp_audio_{int(time.time())}.wav"
 
-            # Start audio recording first (it takes longer to initialize)
-            if self.audio_capture:
-                self.audio_proc = self.audio_capture.start_recording(self.audio_file)
-                # Small delay to let audio recording stabilize
-                import time
-
-                time.sleep(0.1)
-
-            # Start video recording
-            self.video_file = self.recorder.start_recording(temp_video)
-
-            # Update UI
+            # Open the screen capture before starting audio, so the time the
+            # user spends in the "Share screen" dialog doesn't put audio ahead.
             self.start_btn.config(state=tk.DISABLED)
-            self.pause_btn.config(state=tk.NORMAL, text="⏸️ Pause")
-            self.stop_btn.config(state=tk.NORMAL)
-            self.cancel_btn.config(state=tk.NORMAL)
-            self.progress_bar.grid(row=100, column=0, columnspan=3, sticky="ew", pady=5)
-            self.progress_bar.start()
+            self._log("Preparing screen capture...")
+            self._capture_result = None
 
-            # Start timer and show progress window
-            self.recording_timer.start()
-            self.progress_window = ProgressWindow(self.root, self.recording_timer)
-            self.progress_window.pause_btn.config(command=self.pause_recording)
-            self.progress_window.stop_btn.config(command=self.stop_recording)
-            self.progress_window.cancel_btn.config(command=self.cancel_recording)
+            def _open_capture():
+                try:
+                    self.recorder.open_capture()
+                    self._capture_result = "ok"
+                except Exception as e:
+                    self._capture_result = e
 
-            self._log("Recording started...")
+            threading.Thread(target=_open_capture, daemon=True).start()
+            self._wait_for_capture(temp_video)
 
         except (VideoCaptureError, AudioCaptureError) as e:
             messagebox.showerror("Recording Error", str(e))
@@ -952,6 +941,58 @@ class RecorderApp:
             self.logger.error(f"Unexpected error starting recording: {e}")
             messagebox.showerror("Error", f"Failed to start recording: {e}")
             self._cleanup_recording()
+
+    def _wait_for_capture(self, temp_video: str):
+        """Poll until the capture is open, then start recording."""
+        result = self._capture_result
+        if result is None:
+            self.root.after(100, self._wait_for_capture, temp_video)
+            return
+        if result != "ok":
+            self.start_btn.config(state=tk.NORMAL)
+            self._log(f"Could not start screen capture: {result}")
+            messagebox.showerror("Screen Capture", str(result))
+            self._cleanup_recording()
+            return
+        try:
+            self._begin_recording(temp_video)
+        except (VideoCaptureError, AudioCaptureError) as e:
+            messagebox.showerror("Recording Error", str(e))
+            self._cleanup_recording()
+        except Exception as e:
+            self.logger.error(f"Unexpected error starting recording: {e}")
+            messagebox.showerror("Error", f"Failed to start recording: {e}")
+            self._cleanup_recording()
+
+    def _begin_recording(self, temp_video: str):
+        """Start audio and video once the screen capture is ready."""
+        # Start audio recording first (it takes longer to initialize)
+        if self.audio_capture:
+            self.audio_proc = self.audio_capture.start_recording(self.audio_file)
+            # Small delay to let audio recording stabilize
+            import time
+
+            time.sleep(0.1)
+
+        # Start video recording
+        self.video_file = self.recorder.start_recording(temp_video)
+
+        # Update UI
+        self.start_btn.config(state=tk.DISABLED)
+        self.pause_btn.config(state=tk.NORMAL, text="⏸️ Pause")
+        self.stop_btn.config(state=tk.NORMAL)
+        self.cancel_btn.config(state=tk.NORMAL)
+        self.progress_bar.grid(row=100, column=0, columnspan=3, sticky="ew", pady=5)
+        self.progress_bar.start()
+
+        # Start timer and show progress window
+        self.recording_timer.start()
+        self.progress_window = ProgressWindow(self.root, self.recording_timer)
+        self.progress_window.pause_btn.config(command=self.pause_recording)
+        self.progress_window.stop_btn.config(command=self.stop_recording)
+        self.progress_window.cancel_btn.config(command=self.cancel_recording)
+
+        self._log("Recording started...")
 
     def stop_recording(self):
         """Stop recording with proper cleanup."""
@@ -1301,6 +1342,10 @@ class RecorderApp:
                 "Cleanup called but recording is still active - skipping cleanup"
             )
             return
+
+        # Release a screen share that was opened but never recorded
+        if self.recorder:
+            self.recorder.close_capture()
 
         # Update UI
         self.start_btn.config(state=tk.NORMAL)
