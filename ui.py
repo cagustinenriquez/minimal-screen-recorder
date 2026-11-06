@@ -754,7 +754,7 @@ class RecorderApp:
         ).pack(side=tk.LEFT)
         for text, url in (
             ("Report a problem", issue_url()),
-            ("agustinenriquez.dev", WEBSITE_URL),
+            ("www.agustinenriquez.dev", WEBSITE_URL),
         ):
             tk.Label(footer, text="·", **label_style, font=footer_font).pack(
                 side=tk.LEFT, padx=4
