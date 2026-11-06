@@ -37,6 +37,7 @@ except ImportError as e:
     from tkinter import messagebox, ttk
 
     import cv2
+    import snap_compat  # noqa: F401  # before mss: fixes X11 libs in the snap
     import mss
     import numpy as np
 

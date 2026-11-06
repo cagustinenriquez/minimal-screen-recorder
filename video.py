@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import cv2
+
+import snap_compat  # noqa: F401  # must come before mss (fixes X11 libs in the snap)
 import mss
 import numpy as np
 

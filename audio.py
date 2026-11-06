@@ -146,6 +146,29 @@ class SystemAudioCapture:
 
         return moved_count
 
+    def _remove_stale_modules(self) -> None:
+        """Unload record_sink modules left behind by an earlier run."""
+        try:
+            result = self._run_pactl_command(["pactl", "list", "short", "modules"])
+        except AudioCaptureError:
+            return
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            module_id, name, args = parts[0], parts[1], parts[2]
+            stale = (
+                name == "module-null-sink" and "sink_name=record_sink" in args
+            ) or (name == "module-loopback" and "source=record_sink.monitor" in args)
+            if stale:
+                try:
+                    self._run_pactl_command(["pactl", "unload-module", module_id])
+                    self.callback_logger.info(
+                        f"Removed leftover audio routing from a previous run ({name})"
+                    )
+                except AudioCaptureError as e:
+                    self.callback_logger.warning(f"Could not remove {name}: {e}")
+
     def setup(self) -> bool:
         """Set up audio capture environment."""
         try:
@@ -153,6 +176,10 @@ class SystemAudioCapture:
                 raise AudioCaptureError("PulseAudio is not running")
 
             self.callback_logger.info("Setting up audio capture...")
+
+            # A previous run that crashed or was killed can leave its sink and
+            # loopback loaded; a second loopback plays everything twice (+6 dB).
+            self._remove_stale_modules()
 
             # Store original default sink
             result = self._run_pactl_command(["pactl", "get-default-sink"])

@@ -175,3 +175,9 @@ cython_debug/
 parts/
 stage/
 prime/
+
+# Personal notes
+TODO.md
+
+# Snap test cache
+tests/snap/.cache/

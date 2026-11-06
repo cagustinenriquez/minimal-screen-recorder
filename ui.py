@@ -1347,6 +1347,11 @@ class RecorderApp:
         if self.recorder:
             self.recorder.close_capture()
 
+        # Undo audio routing if recording never started (e.g. share cancelled)
+        if self.audio_capture and not self.audio_capture.recording_process:
+            self.audio_capture.cleanup()
+            self.audio_capture = None
+
         # Update UI
         self.start_btn.config(state=tk.NORMAL)
         self.pause_btn.config(state=tk.DISABLED, text="⏸️ Pause")

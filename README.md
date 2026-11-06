@@ -44,26 +44,15 @@ sudo snap refresh screenrec-lite
 
 🐙 Development
 
-Running from source needs FFmpeg, PulseAudio tools (`pactl`) and Tk (`python3-tk`) on your system; `./install_deps.sh` installs them.
+Running from source needs these on your system, which `./install_deps.sh` installs:
+FFmpeg, PulseAudio tools (`pactl`), Tk (`python3-tk`), GStreamer with its PipeWire
+plugin (for recording on Wayland), and the headers used to build PyGObject.
 
-Clone this repo and build locally:
-
-**Using UV (recommended):**
 ```bash
 git clone https://github.com/cagustinenriquez/minimal-screen-recorder.git
 cd minimal-screen-recorder
-./install_deps.sh  # Install system dependencies (FFmpeg, PulseAudio, etc.)
-uv run python ui.py
-```
-
-**Using traditional venv:**
-```bash
-git clone https://github.com/cagustinenriquez/minimal-screen-recorder.git
-cd minimal-screen-recorder
-./install_deps.sh  # Install system dependencies (FFmpeg, PulseAudio, etc.)
-python3 -m venv env && source env/bin/activate
-pip install -r requirements.txt
-python ui.py
+./install_deps.sh
+uv run app.py
 ```
 
 🧪 Run tests
