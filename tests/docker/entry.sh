@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inside the test container: start a virtual display and PulseAudio, then run
-# the shared checks and the audio routing test. Prints PASS/FAIL lines.
+# the shared checks, the audio routing test and the sync test. Prints PASS/FAIL lines.
 set -u
 
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
@@ -11,6 +11,7 @@ for _ in $(seq 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
 status=0
 uv run --quiet python tests/snap/checks.py || status=1
 uv run --quiet python tests/docker/audio_test.py || status=1
+uv run --quiet python tests/docker/sync_test.py || status=1
 
 # The real app must still be running after 10 s (no crash on start).
 out=$(timeout 10 uv run --quiet python app.py 2>&1); code=$?

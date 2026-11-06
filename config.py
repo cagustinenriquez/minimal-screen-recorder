@@ -21,7 +21,8 @@ class RecorderConfig:
     audio_sample_rate: int = 48000
     audio_channels: int = 2
     audio_bitrate: str = "128k"
-    audio_delay_ms: int = -250  # Audio delay compensation in milliseconds
+    # Extra audio shift in ms on top of the automatic sync (+ later, - earlier)
+    audio_delay_ms: int = 0
 
     # UI settings
     theme: str = "dark"
@@ -72,6 +73,11 @@ class ConfigManager:
                 with open(self.config_file) as f:
                     data = json.load(f)
                     # Update config with loaded data
+                    # -250 was the old default, a fixed guess to make up for
+                    # audio and video starting at different times. Sync is now
+                    # measured, so drop the guess if the user never changed it.
+                    if data.get("audio_delay_ms") == -250:
+                        data["audio_delay_ms"] = 0
                     for field in fields(RecorderConfig):
                         if field.name in data:
                             setattr(self.config, field.name, data[field.name])

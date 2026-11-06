@@ -1,5 +1,5 @@
 name: screenrec-lite
-version: '2.1.0'
+version: '2.1.1'
 summary: Simple screen and system audio recorder
 description: |
   A minimal screen and audio recorder for Linux with GUI, system audio routing,
@@ -11,6 +11,7 @@ source-code: https://github.com/cagustinenriquez/minimal-screen-recorder
 issues: https://github.com/cagustinenriquez/minimal-screen-recorder/issues
 contact: https://github.com/cagustinenriquez/minimal-screen-recorder/issues
 license: MIT
+icon: snap/gui/screenrec-lite.png
 
 base: core24
 grade: stable
@@ -69,11 +70,9 @@ parts:
     source: .
     organize:
       '*.py': app/
-      camera.png: app/
       snap/gui/screenrec-lite.desktop: app/screenrec-lite.desktop
     stage:
       - app/*.py
-      - app/camera.png
       - app/screenrec-lite.desktop
     prime:
       - -app/test*.py

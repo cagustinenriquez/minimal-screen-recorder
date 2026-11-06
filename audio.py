@@ -2,9 +2,11 @@
 
 import logging
 import os
-import signal
 import subprocess
+import threading
 import time
+import wave
+from collections import deque
 from collections.abc import Callable
 
 from utils import CallbackLogger
@@ -59,6 +61,10 @@ class SystemAudioCapture:
         self.is_setup = False
         self.recording_process: subprocess.Popen | None = None
         self.paused = False
+        # Wall-clock time (time.time()) of the first recorded audio sample,
+        # measured while recording. Used to line the audio up with the video.
+        self.start_time: float | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=20)
 
         # Set up logging
         self.logger = logging.getLogger(__name__)
@@ -268,109 +274,140 @@ class SystemAudioCapture:
             return False
 
     def start_recording(self, output_file: str) -> subprocess.Popen | None:
-        """Start audio recording."""
+        """Start recording record_sink to a WAV file.
+
+        parec streams raw audio with a small buffer and this class writes the
+        WAV file itself. Knowing when each chunk arrives gives the real time
+        of the first sample (start_time), which is used to line the audio up
+        with the video.
+        """
         if not self.is_setup:
             raise AudioCaptureError("Audio capture not set up. Call setup() first.")
 
         try:
-            # Use WAV format for better compatibility and no compression issues
             cmd = [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "pulse",
-                "-i",
-                "record_sink.monitor",
-                "-c:a",
-                "pcm_s16le",  # Uncompressed PCM audio
-                "-ar",
-                str(self.sample_rate),
-                "-ac",
-                str(self.channels),
-                output_file,
+                "parec",
+                "--device=record_sink.monitor",
+                "--raw",
+                "--format=s16le",
+                f"--rate={self.sample_rate}",
+                f"--channels={self.channels}",
+                "--latency-msec=20",
             ]
-
+            self.start_time = None
+            self.paused = False
+            self._stderr_tail.clear()
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
+            wav = wave.open(output_file, "wb")
+            wav.setnchannels(self.channels)
+            wav.setsampwidth(2)
+            wav.setframerate(self.sample_rate)
+            self._writer_thread = threading.Thread(
+                target=self._write_audio, args=(proc, wav), daemon=True
+            )
+            self._writer_thread.start()
+            threading.Thread(
+                target=self._read_errors, args=(proc,), daemon=True
+            ).start()
 
-            # Quick check if process started successfully
-            time.sleep(0.5)
-            if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else "Unknown error"
-                raise AudioCaptureError(f"FFmpeg failed to start: {stderr}")
+            # Wait until audio actually flows (or parec fails)
+            deadline = time.monotonic() + 5.0
+            while self.start_time is None and time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    time.sleep(0.1)  # let the reader collect the error message
+                    stderr = "\n".join(self._stderr_tail) or "Unknown error"
+                    raise AudioCaptureError(f"parec failed to start: {stderr}")
+                time.sleep(0.01)
+            if self.start_time is None:
+                self.callback_logger.warning("No audio data yet after 5 seconds")
 
             self.recording_process = proc
-            self.paused = False
             self.callback_logger.info("Audio recording started")
             return proc
 
+        except AudioCaptureError:
+            raise
         except Exception as e:
             raise AudioCaptureError(f"Failed to start audio recording: {e}")
 
+    def _write_audio(self, proc: subprocess.Popen, wav: "wave.Wave_write") -> None:
+        """Copy parec's audio into the WAV file until parec exits.
+
+        Each sample's time is first_sample_time + index / rate. Every chunk
+        that arrives gives an upper bound for first_sample_time (it can't
+        have arrived before it was recorded); the smallest one over the
+        first second is the closest estimate. While paused, audio is read
+        and thrown away.
+        """
+        bytes_per_frame = 2 * self.channels
+        frames_read = 0
+        pending = b""
+        fd = proc.stdout.fileno()
+        try:
+            while True:
+                data = os.read(fd, 65536)
+                if not data:
+                    break
+                now = time.time()
+                data = pending + data
+                usable = len(data) - len(data) % bytes_per_frame
+                data, pending = data[:usable], data[usable:]
+                frames_read += usable // bytes_per_frame
+                if frames_read <= self.sample_rate:  # first second
+                    estimate = now - frames_read / self.sample_rate
+                    if self.start_time is None or estimate < self.start_time:
+                        self.start_time = estimate
+                if not self.paused:
+                    wav.writeframes(data)
+        except Exception as e:
+            self.callback_logger.error(f"Audio writing failed: {e}")
+        finally:
+            wav.close()
+
+    def _read_errors(self, proc: subprocess.Popen) -> None:
+        """Keep parec's last messages for error reports."""
+        for line in proc.stderr:
+            self._stderr_tail.append(line.decode(errors="replace").rstrip())
+
     def pause_recording(self) -> None:
-        """Pause/resume audio recording by sending SIGSTOP/SIGCONT to ffmpeg process."""
+        """Pause or resume the audio recording."""
         if not self.recording_process:
             raise AudioCaptureError("No recording process to pause")
-
-        try:
-            if self.paused:
-                # Resume recording
-                self.recording_process.send_signal(signal.SIGCONT)
-                self.paused = False
-                self.callback_logger.info("Audio recording resumed")
-            else:
-                # Pause recording
-                self.recording_process.send_signal(signal.SIGSTOP)
-                self.paused = True
-                self.callback_logger.info("Audio recording paused")
-        except Exception as e:
-            self.callback_logger.error(f"Failed to pause/resume audio recording: {e}")
-            raise AudioCaptureError(f"Failed to pause/resume audio recording: {e}")
+        # Video pausing only skips frames, so audio does the same: parec keeps
+        # running and the audio it sends while paused is dropped.
+        self.paused = not self.paused
+        self.callback_logger.info(
+            "Audio recording paused" if self.paused else "Audio recording resumed"
+        )
 
     def stop_recording(self) -> None:
-        """Stop the audio recording process."""
-        if self.recording_process:
+        """Stop recording and finish the WAV file."""
+        proc = self.recording_process
+        if not proc:
+            return
+        try:
+            proc.terminate()
             try:
-                # If paused, resume first so it can terminate properly
-                if self.paused:
-                    self.callback_logger.info(
-                        "Resuming paused audio recording before stopping"
-                    )
-                    self.recording_process.send_signal(signal.SIGCONT)
-                    time.sleep(0.2)
-
-                self.callback_logger.info("Sending SIGTERM to audio recording process")
-                # Send SIGTERM first (gentler termination)
-                self.recording_process.terminate()
-
-                # Wait longer for audio recording to flush buffers properly
-                try:
-                    self.recording_process.wait(timeout=8)
-                    self.callback_logger.info("Audio recording stopped gracefully")
-                except subprocess.TimeoutExpired:
-                    self.callback_logger.warning(
-                        "Audio recording process did not terminate gracefully within 8 seconds, killing it"
-                    )
-                    self.recording_process.kill()
-                    try:
-                        self.recording_process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        self.callback_logger.error(
-                            "Audio recording process could not be killed"
-                        )
-
-            except Exception as e:
-                self.callback_logger.error(f"Error stopping audio recording: {e}")
-                # Try to kill the process as a last resort
-                try:
-                    if self.recording_process:
-                        self.recording_process.kill()
-                except Exception:
-                    pass
-            finally:
-                self.recording_process = None
-                self.paused = False
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.callback_logger.warning("parec didn't stop, killing it")
+                proc.kill()
+                proc.wait(timeout=2)
+            writer = getattr(self, "_writer_thread", None)
+            if writer:
+                writer.join(timeout=5)
+            self.callback_logger.info("Audio recording stopped")
+        except Exception as e:
+            self.callback_logger.error(f"Error stopping audio recording: {e}")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        finally:
+            self.recording_process = None
+            self.paused = False
 
     def cleanup(self) -> bool:
         """Clean up audio capture environment."""

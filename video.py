@@ -85,6 +85,7 @@ class ScreenRecorder:
         # Performance settings
         self.frame_buffer_size = 30  # frames to buffer
         self.frame_drop_threshold = 0.1  # seconds
+        self.first_frame_time: float | None = None
 
         # Statistics
         self.frames_recorded = 0
@@ -205,17 +206,34 @@ class ScreenRecorder:
                     f"Recording started: {screen_size[0]}x{screen_size[1]} @ {self.fps}fps"
                 )
 
+                # Frames are placed by the clock, not just counted: frame N
+                # belongs at clock_start + N / fps. If capturing falls behind,
+                # the latest frame is written again for the missed slots, so
+                # the video always lasts as long as the real recording and
+                # stays in sync with the audio. Paused time is skipped by
+                # moving clock_start forward.
+                clock_start = None
+                pause_began = None
+
                 while self.recording and consecutive_errors < max_consecutive_errors:
                     if self.paused:
+                        if pause_began is None:
+                            pause_began = time.monotonic()
                         time.sleep(0.1)
                         consecutive_errors = 0  # Reset error count when paused
                         continue
-
-                    frame_start = time.time()
+                    if pause_began is not None:
+                        if clock_start is not None:
+                            clock_start += time.monotonic() - pause_began
+                        pause_began = None
 
                     try:
                         # Capture frame (BGR)
                         frame = source.grab()
+                        now = time.monotonic()
+                        if clock_start is None:
+                            clock_start = now
+                            self.first_frame_time = time.time()
 
                         # Verify frame dimensions match expected size
                         if frame.shape[:2] != (screen_size[1], screen_size[0]):
@@ -225,14 +243,20 @@ class ScreenRecorder:
 
                         # Write frame - ensure writer is still valid
                         if video_writer and video_writer.isOpened():
-                            video_writer.write(frame)
-                            self.frames_recorded += 1
+                            due = int((now - clock_start) / frame_delay) + 1
+                            copies = due - self.frames_recorded
+                            for _ in range(copies):
+                                video_writer.write(frame)
+                            if copies > 1:
+                                # Slots we couldn't capture in time
+                                self.frames_dropped += copies - 1
+                            before = self.frames_recorded
+                            self.frames_recorded += max(copies, 0)
                             consecutive_errors = (
                                 0  # Reset error count on successful write
                             )
 
-                            # Log every 60 frames (about once per second at 60fps)
-                            if self.frames_recorded % 60 == 0:
+                            if self.frames_recorded // 60 > before // 60:
                                 self.callback_logger.info(
                                     f"Recorded {self.frames_recorded} frames"
                                 )
@@ -242,19 +266,11 @@ class ScreenRecorder:
                             )
                             break
 
-                        # Frame timing - ensure consistent frame rate
-                        frame_time = time.time() - frame_start
-                        sleep_time = max(0.0, frame_delay - frame_time)
-
-                        # Always sleep for the remaining frame time to maintain consistent FPS
+                        # Wait until the next frame is due
+                        next_due = clock_start + self.frames_recorded * frame_delay
+                        sleep_time = next_due - time.monotonic()
                         if sleep_time > 0:
                             time.sleep(sleep_time)
-                        elif frame_time > frame_delay + self.frame_drop_threshold:
-                            # Only count as dropped if significantly over time
-                            self.frames_dropped += 1
-                            self.logger.debug(
-                                f"Frame processing took {frame_time:.3f}s (target: {frame_delay:.3f}s)"
-                            )
 
                     except Exception as e:
                         consecutive_errors += 1
@@ -367,6 +383,8 @@ class ScreenRecorder:
         self.frames_dropped = 0
         self.capture_error = None
         self.start_time = time.time()
+        # Wall-clock time of the first captured frame (set by the loop)
+        self.first_frame_time: float | None = None
 
         # Start recording in separate thread
         self.recording_thread = threading.Thread(
@@ -486,17 +504,37 @@ class ScreenRecorder:
         }
 
 
+def _media_duration(path: str) -> float | None:
+    """Duration of a media file in seconds, or None if ffprobe can't tell."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(out.stdout.strip())
+    except (ValueError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def merge_audio_video(
     video_path: str,
     audio_path: str,
     output_path: str,
     video_codec: str = "copy",
     audio_codec: str = "aac",
-    audio_delay_ms: int = 100,
+    audio_delay_ms: int = 0,
+    audio_lead_s: float = 0.0,
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> bool:
-    """Merge audio and video files using FFmpeg."""
+    """Merge audio and video files using FFmpeg.
+
+    audio_lead_s: how many seconds the audio recording started before the
+    first video frame (measured). That much is cut from the start of the
+    audio. audio_delay_ms is the user's extra adjustment on top: positive
+    makes the sound later, negative makes it earlier.
+    """
 
     logger = logging.getLogger(__name__)
     callback_logger = CallbackLogger(logger, log_callback)
@@ -525,60 +563,50 @@ def merge_audio_video(
 
         callback_logger.info("Starting FFmpeg merge process...")
 
-        # Handle audio delay compensation
-        if audio_delay_ms != 0:
-            if audio_delay_ms > 0:
-                # Positive delay - delay audio
-                filter_complex = (
-                    f"[1:a]adelay={audio_delay_ms}|{audio_delay_ms}[delayed_audio]"
-                )
-                audio_map = "[delayed_audio]"
-            else:
-                # Negative delay - advance audio (delay video)
-                video_delay = abs(audio_delay_ms)
-                filter_complex = (
-                    f"[0:v]tpad=start_duration={video_delay / 1000}[delayed_video]"
-                )
-                audio_map = "1:a"
-
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                video_path,
-                "-i",
-                audio_path,
-                "-c:v",
-                video_codec,
-                "-c:a",
-                audio_codec,
-                "-b:a",
-                "128k",
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[delayed_video]" if audio_delay_ms < 0 else "0:v",
-                "-map",
-                audio_map,
-                output_path,
-            ]
+        # Line the audio up with the video: shift it by the user's
+        # adjustment minus how early the audio started.
+        shift_ms = audio_delay_ms - audio_lead_s * 1000
+        callback_logger.info(
+            f"Audio started {audio_lead_s * 1000:.0f} ms before video; "
+            f"shifting audio by {shift_ms:.0f} ms"
+        )
+        if shift_ms >= 1:
+            audio_filter = f"[1:a]adelay={shift_ms:.0f}:all=1[aligned_audio]"
+        elif shift_ms <= -1:
+            audio_filter = (
+                f"[1:a]atrim=start={-shift_ms / 1000:.3f},"
+                "asetpts=PTS-STARTPTS[aligned_audio]"
+            )
         else:
-            # No delay needed - removed -shortest flag to prevent premature ending
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                video_path,
-                "-i",
-                audio_path,
-                "-c:v",
-                video_codec,
-                "-c:a",
-                audio_codec,
-                "-b:a",
-                "128k",
-                output_path,
-            ]
+            audio_filter = "[1:a]anull[aligned_audio]"
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+            "-i",
+            audio_path,
+            "-filter_complex",
+            audio_filter,
+            "-map",
+            "0:v",
+            "-map",
+            "[aligned_audio]",
+            "-c:v",
+            video_codec,
+            "-c:a",
+            audio_codec,
+            "-b:a",
+            "128k",
+        ]
+
+        # The audio keeps recording briefly after the video stops; end the
+        # file with the video instead of showing a frozen last frame.
+        video_duration = _media_duration(video_path)
+        if video_duration:
+            cmd += ["-t", f"{video_duration:.3f}"]
+        cmd.append(output_path)
 
         # Get video duration for progress calculation
         total_duration = None
@@ -610,7 +638,7 @@ def merge_audio_video(
         if progress_callback:
             if total_duration:
                 # Use progress format for real-time monitoring with longer timeout for big files
-                cmd.extend(["-progress", "pipe:1"])
+                cmd[1:1] = ["-progress", "pipe:1"]  # global option, goes first
 
                 process = subprocess.Popen(
                     cmd,
