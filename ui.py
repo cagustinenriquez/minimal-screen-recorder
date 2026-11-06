@@ -847,6 +847,8 @@ class RecorderApp:
                 self._log("Already recording - ignoring start request")
                 return
 
+            self.audio_start_time = None
+
             # Validate FPS
             valid, fps = validate_fps(self.fps_entry.get())
             if not valid:
@@ -1120,6 +1122,7 @@ class RecorderApp:
                 if self.audio_capture:
                     self.audio_capture.stop_recording()
                     time.sleep(0.5)  # Allow audio to finish writing
+                    self.audio_start_time = self.audio_capture.start_time
                     self._log("Audio stopped, now cleaning up...")
                     self.audio_capture.cleanup()
                     self.audio_capture = None
@@ -1282,6 +1285,19 @@ class RecorderApp:
 
         self.root.after(30000, _backup_cleanup)  # Increased from 10 to 30 seconds
 
+    def _audio_lead_seconds(self) -> float:
+        """How many seconds the audio started before the first video frame."""
+        audio_start = getattr(self, "audio_start_time", None)
+        video_start = self.recorder.first_frame_time if self.recorder else None
+        if audio_start is None or video_start is None:
+            self._log("Couldn't measure audio/video start times; not aligning")
+            return 0.0
+        lead = video_start - audio_start
+        if not -5.0 < lead < 5.0:  # clocks disagree; don't trust it
+            self._log(f"Measured audio lead {lead:.3f}s looks wrong; not aligning")
+            return 0.0
+        return lead
+
     def _process_output(self, video_file: str) -> str | None:
         """Process the recorded output (merge audio/video, cleanup)."""
         # Show processing progress window
@@ -1335,6 +1351,7 @@ class RecorderApp:
                     else "copy",
                     audio_codec="aac",
                     audio_delay_ms=self.config.audio_delay_ms,
+                    audio_lead_s=self._audio_lead_seconds(),
                     log_callback=self._log,
                     progress_callback=progress_callback,
                 )

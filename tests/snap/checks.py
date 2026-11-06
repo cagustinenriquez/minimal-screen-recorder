@@ -84,6 +84,11 @@ def _():
     return run(["pactl", "--version"]).splitlines()[0]
 
 
+@check("parec")
+def _():
+    return run(["parec", "--version"]).splitlines()[0]
+
+
 @check("ffmpeg can encode")
 def _():
     out = os.path.join(os.environ.get("SNAP_USER_COMMON", "/tmp"), "check.mp4")
