@@ -4,6 +4,8 @@ import os
 import subprocess
 import threading
 import tkinter as tk
+import urllib.parse
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -374,6 +376,13 @@ class SettingsWindow:
 
     def _setup_buttons(self):
         """Set up OK/Cancel buttons."""
+        # Shows "Settings saved" or what's wrong, instead of a popup
+        self.status_label = tk.Label(
+            self.window, text="", bg="#1e1e1e", fg="#4ade80", font=("Arial", 9),
+            wraplength=420, justify=tk.LEFT,
+        )
+        self.status_label.pack(pady=(8, 0))
+
         button_frame = tk.Frame(self.window, bg="#1e1e1e")
         button_frame.pack(pady=10)
 
@@ -431,19 +440,24 @@ class SettingsWindow:
             # Validate and save
             issues = self.config_manager.validate_config()
             if issues:
-                messagebox.showerror("Invalid Settings", "\n".join(issues))
+                self._show_status("\n".join(issues), error=True)
                 return
 
             if self.config_manager.save_config():
-                messagebox.showinfo("Settings", "Settings saved successfully!")
-                self.window.destroy()
+                self._show_status("✓ Settings saved")
+                self.window.after(1000, self.window.destroy)
             else:
-                messagebox.showerror("Error", "Failed to save settings.")
+                self._show_status("Couldn't save settings.", error=True)
 
-        except ValueError as e:
-            messagebox.showerror(
-                "Invalid Input", f"Please check your input values: {e}"
+        except ValueError:
+            self._show_status(
+                "Quality and Audio Delay must be whole numbers (for example 95 or -100).",
+                error=True,
             )
+
+    def _show_status(self, text: str, error: bool = False):
+        """Show a message under the settings (green for OK, red for errors)."""
+        self.status_label.config(text=text, fg="#f87171" if error else "#4ade80")
 
     def _cancel(self):
         """Cancel settings changes."""
@@ -740,6 +754,29 @@ class RecorderApp:
         ).grid(
             row=row, column=0, columnspan=3, sticky="w", pady=(20, 0)
         )
+        row += 1
+
+        # Footer: version and ways to reach the developer
+        footer = tk.Frame(main_frame, bg="#1e1e1e")
+        footer.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        footer_font = ("Arial", 8)
+        tk.Label(
+            footer, text=f"screenrec-lite {app_version()}", **label_style,
+            font=footer_font,
+        ).pack(side=tk.LEFT)
+        for text, url in (
+            ("Report a problem", issue_url()),
+            ("www.agustinenriquez.dev", WEBSITE_URL),
+        ):
+            tk.Label(footer, text="·", **label_style, font=footer_font).pack(
+                side=tk.LEFT, padx=4
+            )
+            link = tk.Label(
+                footer, text=text, bg="#1e1e1e", fg="#6cb6ff",
+                cursor="hand2", font=footer_font + ("underline",),
+            )
+            link.pack(side=tk.LEFT)
+            link.bind("<Button-1>", lambda e, u=url: open_url(u))
 
     def _setup_keyboard_shortcuts(self):
         """Set up keyboard shortcuts."""
@@ -1655,6 +1692,52 @@ class RecorderApp:
             self.audio_capture.cleanup()
 
         self.root.destroy()
+
+
+REPO_URL = "https://github.com/cagustinenriquez/minimal-screen-recorder"
+WEBSITE_URL = "https://www.agustinenriquez.dev"
+
+
+def app_version() -> str:
+    """Snap version when running as a snap, otherwise "from source"."""
+    return os.environ.get("SNAP_VERSION") or "from source"
+
+
+def issue_url() -> str:
+    """New GitHub issue, pre-filled with the details needed to debug."""
+    os_name = "unknown"
+    for path in ("/var/lib/snapd/hostfs/etc/os-release", "/etc/os-release"):
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=", 1)[1].strip().strip('"')
+                        break
+            break
+        except OSError:
+            continue
+    session = os.environ.get("XDG_SESSION_TYPE") or (
+        "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11"
+    )
+    body = (
+        "**What happened?**\n\n\n"
+        "**What did you expect?**\n\n\n"
+        "---\n"
+        f"- screenrec-lite: {app_version()}\n"
+        f"- OS: {os_name}\n"
+        f"- Session: {session}\n"
+    )
+    return f"{REPO_URL}/issues/new?" + urllib.parse.urlencode({"body": body})
+
+
+def open_url(url: str) -> None:
+    """Open a link in the user's browser (works inside the snap too)."""
+    try:
+        subprocess.Popen(
+            ["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except OSError:
+        webbrowser.open(url)
 
 
 def set_window_icon(root: tk.Tk) -> None:
