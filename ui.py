@@ -4,6 +4,8 @@ import os
 import subprocess
 import threading
 import tkinter as tk
+import urllib.parse
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -740,6 +742,29 @@ class RecorderApp:
         ).grid(
             row=row, column=0, columnspan=3, sticky="w", pady=(20, 0)
         )
+        row += 1
+
+        # Footer: version and ways to reach the developer
+        footer = tk.Frame(main_frame, bg="#1e1e1e")
+        footer.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        footer_font = ("Arial", 8)
+        tk.Label(
+            footer, text=f"screenrec-lite {app_version()}", **label_style,
+            font=footer_font,
+        ).pack(side=tk.LEFT)
+        for text, url in (
+            ("Report a problem", issue_url()),
+            ("agustinenriquez.dev", WEBSITE_URL),
+        ):
+            tk.Label(footer, text="·", **label_style, font=footer_font).pack(
+                side=tk.LEFT, padx=4
+            )
+            link = tk.Label(
+                footer, text=text, bg="#1e1e1e", fg="#6cb6ff",
+                cursor="hand2", font=footer_font + ("underline",),
+            )
+            link.pack(side=tk.LEFT)
+            link.bind("<Button-1>", lambda e, u=url: open_url(u))
 
     def _setup_keyboard_shortcuts(self):
         """Set up keyboard shortcuts."""
@@ -1655,6 +1680,52 @@ class RecorderApp:
             self.audio_capture.cleanup()
 
         self.root.destroy()
+
+
+REPO_URL = "https://github.com/cagustinenriquez/minimal-screen-recorder"
+WEBSITE_URL = "https://www.agustinenriquez.dev"
+
+
+def app_version() -> str:
+    """Snap version when running as a snap, otherwise "from source"."""
+    return os.environ.get("SNAP_VERSION") or "from source"
+
+
+def issue_url() -> str:
+    """New GitHub issue, pre-filled with the details needed to debug."""
+    os_name = "unknown"
+    for path in ("/var/lib/snapd/hostfs/etc/os-release", "/etc/os-release"):
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=", 1)[1].strip().strip('"')
+                        break
+            break
+        except OSError:
+            continue
+    session = os.environ.get("XDG_SESSION_TYPE") or (
+        "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11"
+    )
+    body = (
+        "**What happened?**\n\n\n"
+        "**What did you expect?**\n\n\n"
+        "---\n"
+        f"- screenrec-lite: {app_version()}\n"
+        f"- OS: {os_name}\n"
+        f"- Session: {session}\n"
+    )
+    return f"{REPO_URL}/issues/new?" + urllib.parse.urlencode({"body": body})
+
+
+def open_url(url: str) -> None:
+    """Open a link in the user's browser (works inside the snap too)."""
+    try:
+        subprocess.Popen(
+            ["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except OSError:
+        webbrowser.open(url)
 
 
 def set_window_icon(root: tk.Tk) -> None:
