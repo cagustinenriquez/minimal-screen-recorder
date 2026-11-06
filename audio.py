@@ -1,6 +1,7 @@
 """Audio capture functionality for the screen recorder."""
 
 import logging
+import os
 import signal
 import subprocess
 import time
@@ -13,6 +14,30 @@ class AudioCaptureError(Exception):
     """Custom exception for audio capture errors."""
 
     pass
+
+
+SNAP_CONNECT_AUDIO_CMD = "sudo snap connect screenrec-lite:audio-record"
+
+
+def snap_audio_record_missing() -> bool:
+    """True if running as a snap without the audio-record permission.
+
+    Without it the snap can play sound but not capture it, so recordings
+    would be silent. Outside a snap (or if the check itself fails) assume
+    recording is allowed.
+    """
+    if not os.environ.get("SNAP"):
+        return False
+    try:
+        result = subprocess.run(
+            ["snapctl", "is-connected", "audio-record"],
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # Exit code 1 means "not connected"; anything else is treated as unknown.
+    return result.returncode == 1
 
 
 class SystemAudioCapture:

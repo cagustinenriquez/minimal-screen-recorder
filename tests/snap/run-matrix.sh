@@ -88,6 +88,13 @@ run_checks() { # $1=container
   lxc exec "$c" --env DISPLAY=:99 -- snap run --shell screenrec-lite \
     -c '$SNAP/bin/python3 /var/snap/screenrec-lite/common/checks.py' 2>&1 | grep -E '^(PASS|FAIL) '
 
+  # Without audio-record the app must notice (it shows how to enable it).
+  lxc exec "$c" -- snap disconnect screenrec-lite:audio-record >/dev/null 2>&1
+  lxc exec "$c" --env DISPLAY=:99 --env EXPECT_AUDIO_RECORD=missing --env ONLY_AUDIO_PERMISSION=1 -- \
+    snap run --shell screenrec-lite -c '$SNAP/bin/python3 /var/snap/screenrec-lite/common/checks.py' 2>&1 \
+    | grep -E '^(PASS|FAIL) ' | sed 's/audio permission detected/audio permission detected when missing/'
+  lxc exec "$c" -- snap connect screenrec-lite:audio-record >/dev/null 2>&1
+
   # The real app: it must still be running after 10 s (no crash on start).
   local out code
   out=$(lxc exec "$c" --cwd /var/snap/screenrec-lite/common --env DISPLAY=:99 -- \

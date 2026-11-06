@@ -154,6 +154,20 @@ def _():
     return f"{shot.size[0]}x{shot.size[1]}"
 
 
+@check("audio permission detected")
+def _():
+    from audio import snap_audio_record_missing
+
+    expect_missing = os.environ.get("EXPECT_AUDIO_RECORD") == "missing"
+    missing = snap_audio_record_missing()
+    if missing != expect_missing:
+        raise RuntimeError(f"reported missing={missing}, expected {expect_missing}")
+    return "not connected" if missing else "connected"
+
+
+if os.environ.get("ONLY_AUDIO_PERMISSION"):
+    results[:] = [r for r in results if r[0] == "audio permission detected"]
+
 for name, ok, detail in results:
     line = f"{'PASS' if ok else 'FAIL'} {name}"
     if detail:

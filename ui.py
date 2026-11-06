@@ -6,7 +6,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from audio import AudioCaptureError, SystemAudioCapture
+from audio import (
+    SNAP_CONNECT_AUDIO_CMD,
+    AudioCaptureError,
+    SystemAudioCapture,
+    snap_audio_record_missing,
+)
 from config import ConfigManager
 from utils import (
     RecordingTimer,
@@ -861,6 +866,13 @@ class RecorderApp:
                 ):
                     return
 
+            # In the snap, audio capture needs a permission the user may not
+            # have granted yet; without it recordings would be silent.
+            if selected_apps and snap_audio_record_missing():
+                if self._ask_audio_permission() != "video":
+                    return
+                selected_apps = []
+
             # Initialize recorder
             self.recorder = ScreenRecorder(
                 fps,
@@ -941,6 +953,79 @@ class RecorderApp:
             self.logger.error(f"Unexpected error starting recording: {e}")
             messagebox.showerror("Error", f"Failed to start recording: {e}")
             self._cleanup_recording()
+
+    def _ask_audio_permission(self) -> str:
+        """Explain how to allow audio recording. Returns "video" or "cancel"."""
+        bg, fg = "#1e1e1e", "#ffffff"
+        btn = {"bg": "#3a3a3a", "fg": "white", "activebackground": "#5a5a5a"}
+        dialog = tk.Toplevel(self.root, bg=bg, padx=16, pady=14)
+        dialog.title("Audio recording is turned off")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        choice = {"value": "cancel"}
+
+        tk.Label(
+            dialog,
+            text="Audio recording is turned off for this app",
+            bg=bg,
+            fg=fg,
+            font=("Arial", 11, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            dialog,
+            text=(
+                "To record sound, run this once in a terminal,\n"
+                "then restart the app:"
+            ),
+            bg=bg,
+            fg="#cccccc",
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(6, 6))
+
+        cmd_var = tk.StringVar(value=SNAP_CONNECT_AUDIO_CMD)
+        entry = tk.Entry(
+            dialog,
+            textvariable=cmd_var,
+            state="readonly",
+            readonlybackground="#2e2e2e",
+            fg=fg,
+            width=len(SNAP_CONNECT_AUDIO_CMD) + 2,
+            relief=tk.FLAT,
+        )
+        entry.pack(fill=tk.X, ipady=4)
+
+        buttons = tk.Frame(dialog, bg=bg)
+        buttons.pack(fill=tk.X, pady=(12, 0))
+
+        def copy_command():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(SNAP_CONNECT_AUDIO_CMD)
+            copy_btn.config(text="Copied")
+
+        def finish(value: str):
+            choice["value"] = value
+            dialog.destroy()
+
+        copy_btn = tk.Button(buttons, text="Copy command", command=copy_command, **btn)
+        copy_btn.pack(side=tk.LEFT)
+        tk.Button(
+            buttons, text="Cancel", command=lambda: finish("cancel"), **btn
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            buttons,
+            text="Record video only",
+            command=lambda: finish("video"),
+            **btn,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish("cancel"))
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + 40
+        y = self.root.winfo_rooty() + 40
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return choice["value"]
 
     def _wait_for_capture(self, temp_video: str):
         """Poll until the capture is open, then start recording."""
