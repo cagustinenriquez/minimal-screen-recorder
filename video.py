@@ -8,16 +8,48 @@ from collections.abc import Callable
 from pathlib import Path
 
 import cv2
+
+import snap_compat  # noqa: F401  # must come before mss (fixes X11 libs in the snap)
 import mss
 import numpy as np
 
 from utils import CallbackLogger, safe_remove_file
+from wayland_capture import PortalCaptureError, PortalFrameSource, is_wayland_session
 
 
 class VideoCaptureError(Exception):
     """Custom exception for video capture errors."""
 
     pass
+
+
+class _MssFrameSource:
+    """Frames from the X11 screen via mss (black on Wayland)."""
+
+    def __init__(self, monitor_index: int):
+        self.monitor_index = monitor_index
+        self.sct = None
+        self.monitor = None
+
+    def __enter__(self):
+        if self.sct is None:
+            self.sct = mss.mss()
+            self.monitor = self.sct.monitors[self.monitor_index]
+        return self
+
+    def grab(self) -> np.ndarray:
+        # mss gives BGRA; dropping alpha leaves BGR, which OpenCV expects
+        return np.array(self.sct.grab(self.monitor))[:, :, :3]
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return (self.monitor["width"], self.monitor["height"])
+
+    def __exit__(self, *exc):
+        if self.sct is not None:
+            self.sct.close()
+            self.sct = None
+        return False
 
 
 class ScreenRecorder:
@@ -58,6 +90,8 @@ class ScreenRecorder:
         self.frames_recorded = 0
         self.frames_dropped = 0
         self.start_time: float | None = None
+        self.capture_error: str | None = None
+        self._source = None  # capture opened ahead of time by open_capture()
 
         # Set up logging
         self.logger = logging.getLogger(__name__)
@@ -151,27 +185,25 @@ class ScreenRecorder:
         video_writer = None
         try:
             self.callback_logger.info("=== VIDEO RECORDING LOOP STARTED ===")
-            screen_info = self.get_screen_info()
-            screen_size = (screen_info["width"], screen_info["height"])
-            self.callback_logger.info(f"Screen info: {screen_info}")
-
-            self.callback_logger.info(f"Creating video writer for: {self.output_file}")
-            video_writer = self._create_video_writer(self.output_file, screen_size)
-            self.video_writer = video_writer  # Store reference for external access
-            frame_delay = 1.0 / self.fps
-            self.callback_logger.info(
-                f"Video writer created successfully. Frame delay: {frame_delay}s"
-            )
-
-            self.callback_logger.info(
-                f"Recording started: {screen_size[0]}x{screen_size[1]} @ {self.fps}fps"
-            )
+            source = self._source or self._make_source()
+            self._source = None
 
             consecutive_errors = 0
             max_consecutive_errors = 10
 
-            with mss.mss() as sct:
-                monitor = sct.monitors[self.monitor_index]
+            with source:
+                screen_size = source.size
+                self.callback_logger.info(f"Capture size: {screen_size}")
+
+                self.callback_logger.info(
+                    f"Creating video writer for: {self.output_file}"
+                )
+                video_writer = self._create_video_writer(self.output_file, screen_size)
+                self.video_writer = video_writer  # Store reference for external access
+                frame_delay = 1.0 / self.fps
+                self.callback_logger.info(
+                    f"Recording started: {screen_size[0]}x{screen_size[1]} @ {self.fps}fps"
+                )
 
                 while self.recording and consecutive_errors < max_consecutive_errors:
                     if self.paused:
@@ -182,19 +214,14 @@ class ScreenRecorder:
                     frame_start = time.time()
 
                     try:
-                        # Capture frame
-                        screenshot = sct.grab(monitor)
-                        frame = np.array(screenshot)[:, :, :3]  # Remove alpha channel
-
-                        # MSS captures in BGRA format, removing alpha gives us BGR
-                        # OpenCV VideoWriter expects BGR format, so no conversion needed
+                        # Capture frame (BGR)
+                        frame = source.grab()
 
                         # Verify frame dimensions match expected size
                         if frame.shape[:2] != (screen_size[1], screen_size[0]):
-                            self.callback_logger.warning(
-                                f"Frame size mismatch: got {frame.shape[:2]}, expected {(screen_size[1], screen_size[0])}"
-                            )
-                            continue
+                            # The shared screen can change size (e.g. resolution
+                            # change); scale to keep the video writer happy.
+                            frame = cv2.resize(frame, screen_size)
 
                         # Write frame - ensure writer is still valid
                         if video_writer and video_writer.isOpened():
@@ -249,7 +276,11 @@ class ScreenRecorder:
             if self.frames_recorded == 0:
                 self.callback_logger.error("ERROR: No frames were recorded")
 
+        except PortalCaptureError as e:
+            self.capture_error = str(e)
+            self.callback_logger.error(f"Screen sharing failed: {e}")
         except Exception as e:
+            self.capture_error = str(e)
             self.callback_logger.error(f"Recording failed with exception: {e}")
             import traceback
 
@@ -293,6 +324,33 @@ class ScreenRecorder:
                 f"{self.frames_dropped} dropped, {total_time:.1f}s ==="
             )
 
+    def _make_source(self):
+        if is_wayland_session():
+            self.callback_logger.info(
+                "Wayland session: asking the desktop to share the screen"
+            )
+            return PortalFrameSource()
+        return _MssFrameSource(self.monitor_index)
+
+    def open_capture(self) -> None:
+        """Open the screen capture now, before audio starts.
+
+        On Wayland this shows the "Share screen" dialog and waits for the
+        user, so call it from a background thread.
+        """
+        source = self._make_source()
+        try:
+            source.__enter__()
+        except PortalCaptureError as e:
+            raise VideoCaptureError(str(e)) from e
+        self._source = source
+
+    def close_capture(self) -> None:
+        """Release a capture opened by open_capture() that was never used."""
+        if self._source is not None:
+            self._source.__exit__(None, None, None)
+            self._source = None
+
     def start_recording(self, output_file: str) -> str:
         """Start screen recording."""
         if self.recording:
@@ -307,6 +365,7 @@ class ScreenRecorder:
         self.paused = False
         self.frames_recorded = 0
         self.frames_dropped = 0
+        self.capture_error = None
         self.start_time = time.time()
 
         # Start recording in separate thread

@@ -1,0 +1,11 @@
+.git
+.venv
+env
+*.snap
+parts
+stage
+prime
+tests/snap/.cache
+__pycache__
+recorder_config.json
+TODO.md

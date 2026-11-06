@@ -11,4 +11,7 @@ dependencies = [
     "pillow>=11.3.0",
     "pre-commit>=4.3.0",
     "psutil>=7.0.0",
+    # Wayland screen capture (GStreamer + screen-share portal). Builds from
+    # source: needs libgirepository-2.0-dev and libcairo2-dev (install_deps.sh).
+    "pygobject>=3.50",
 ]

@@ -4,9 +4,12 @@ summary: Simple screen and system audio recorder
 description: |
   A minimal screen and audio recorder for Linux with GUI, system audio routing,
   and app-level control for Zoom, Firefox, and more.
-website: https://github.com/cagustinenriquez/minimal-screen-recorder
+website:
+  - https://www.agustinenriquez.dev
+  - https://github.com/cagustinenriquez/minimal-screen-recorder
 source-code: https://github.com/cagustinenriquez/minimal-screen-recorder
 issues: https://github.com/cagustinenriquez/minimal-screen-recorder/issues
+contact: https://github.com/cagustinenriquez/minimal-screen-recorder/issues
 license: MIT
 
 base: core24
@@ -22,7 +25,10 @@ apps:
     extensions: [gnome]
     environment:
       # The venv's python is the base snap's; point it at the staged tkinter and Tcl/Tk.
-      PYTHONPATH: $SNAP/usr/lib/python3.12/lib-dynload:$SNAP/usr/lib/python3.12
+      # dist-packages holds PyGObject (python3-gi), used for Wayland screen capture.
+      PYTHONPATH: $SNAP/usr/lib/python3.12/lib-dynload:$SNAP/usr/lib/python3.12:$SNAP/usr/lib/python3/dist-packages
+      GI_TYPELIB_PATH: $SNAP/usr/lib/x86_64-linux-gnu/girepository-1.0:$GI_TYPELIB_PATH
+      GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0
       TCL_LIBRARY: $SNAP/usr/share/tcltk/tcl8.6
       TK_LIBRARY: $SNAP/usr/share/tcltk/tk8.6
       # ffmpeg needs libblas/liblapack, which Debian keeps in subdirs (alternatives).
@@ -50,6 +56,13 @@ parts:
       - python3-tk
       - ffmpeg
       - pulseaudio-utils
+      # Wayland screen capture: portal (D-Bus via GLib) + PipeWire stream via GStreamer
+      - python3-gi
+      - gir1.2-glib-2.0
+      - gir1.2-gstreamer-1.0
+      - gir1.2-gst-plugins-base-1.0
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-pipewire
 
   app:
     plugin: dump

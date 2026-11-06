@@ -169,3 +169,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Snap build output
+*.snap
+parts/
+stage/
+prime/
+
+# Personal notes
+TODO.md
+
+# Snap test cache
+tests/snap/.cache/
