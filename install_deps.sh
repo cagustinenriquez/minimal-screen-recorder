@@ -28,8 +28,16 @@ if command -v apt &> /dev/null; then
     echo "Installing Wayland screen capture support (PyGObject, GStreamer, PipeWire)..."
     sudo apt install -y python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
         gstreamer1.0-plugins-base gstreamer1.0-pipewire
-    # Headers so uv/pip can build PyGObject inside the virtualenv
-    sudo apt install -y pkg-config libgirepository-2.0-dev libcairo2-dev
+    # Headers so uv/pip can build PyGObject inside the virtualenv. PyGObject
+    # needs GLib 2.80+ (libgirepository-2.0), i.e. Ubuntu 24.04 / Debian 13 or newer.
+    if ! apt-cache show libgirepository-2.0-dev >/dev/null 2>&1; then
+        echo ""
+        echo "Running from source needs Ubuntu 24.04 / Debian 13 or newer"
+        echo "(libgirepository-2.0-dev isn't available on this release)."
+        echo "On older releases, install the snap instead: sudo snap install screenrec-lite"
+        exit 1
+    fi
+    sudo apt install -y pkg-config python3-dev libgirepository-2.0-dev libcairo2-dev
     
 elif command -v dnf &> /dev/null; then
     echo "Using dnf package manager..."
@@ -45,7 +53,7 @@ elif command -v dnf &> /dev/null; then
 
     echo "Installing Wayland screen capture support (PyGObject, GStreamer, PipeWire)..."
     sudo dnf install -y python3-gobject gstreamer1-plugins-base pipewire-gstreamer
-    sudo dnf install -y pkgconf gobject-introspection-devel cairo-devel
+    sudo dnf install -y pkgconf python3-devel gobject-introspection-devel cairo-devel
     
 elif command -v pacman &> /dev/null; then
     echo "Using pacman package manager..."

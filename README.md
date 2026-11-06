@@ -44,7 +44,8 @@ sudo snap refresh screenrec-lite
 
 🐙 Development
 
-Running from source needs these on your system, which `./install_deps.sh` installs:
+Running from source needs Ubuntu 24.04 / Debian 13 or newer (on older releases, use
+the snap). It also needs these on your system, which `./install_deps.sh` installs:
 FFmpeg, PulseAudio tools (`pactl`), Tk (`python3-tk`), GStreamer with its PipeWire
 plugin (for recording on Wayland), and the headers used to build PyGObject.
 

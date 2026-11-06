@@ -13,7 +13,8 @@ import subprocess
 import sys
 import traceback
 
-APP_DIR = os.path.join(os.environ.get("SNAP", ""), "app")
+# Inside the snap the app lives in $SNAP/app; set APP_DIR to test a source checkout.
+APP_DIR = os.environ.get("APP_DIR") or os.path.join(os.environ.get("SNAP", ""), "app")
 sys.path.insert(0, APP_DIR)
 import snap_compat  # noqa: E402,F401  # same library fix the app applies
 
