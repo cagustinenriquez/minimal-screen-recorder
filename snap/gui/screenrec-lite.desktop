@@ -2,7 +2,7 @@
 Name=Screen Recorder
 Comment=Minimal screen and audio recorder
 Exec=screenrec-lite
-Icon=${SNAP}/meta/gui/camera.png
+Icon=${SNAP}/meta/gui/screenrec-lite.svg
 Terminal=false
 Type=Application
 Categories=AudioVideo;

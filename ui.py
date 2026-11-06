@@ -1,5 +1,6 @@
 """Enhanced UI for the screen recorder with better UX and controls."""
 
+import os
 import subprocess
 import threading
 import tkinter as tk
@@ -1656,9 +1657,27 @@ class RecorderApp:
         self.root.destroy()
 
 
+def set_window_icon(root: tk.Tk) -> None:
+    """Use the app icon for the window (shown in the dock and Alt+Tab)."""
+    here = Path(__file__).resolve().parent
+    candidates = [
+        Path(os.environ.get("SNAP", "/nonexistent")) / "meta/gui/screenrec-lite.png",
+        here / "snap/gui/screenrec-lite.png",  # running from source
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                root._icon = tk.PhotoImage(file=str(path))  # keep a reference
+                root.iconphoto(True, root._icon)
+            except tk.TclError:
+                pass
+            return
+
+
 def main():
     """Main application entry point."""
     root = tk.Tk(className="screenrec-lite")
+    set_window_icon(root)
     app = RecorderApp(root)
 
     # Set up window close handler
