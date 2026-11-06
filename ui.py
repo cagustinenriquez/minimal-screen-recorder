@@ -376,6 +376,13 @@ class SettingsWindow:
 
     def _setup_buttons(self):
         """Set up OK/Cancel buttons."""
+        # Shows "Settings saved" or what's wrong, instead of a popup
+        self.status_label = tk.Label(
+            self.window, text="", bg="#1e1e1e", fg="#4ade80", font=("Arial", 9),
+            wraplength=420, justify=tk.LEFT,
+        )
+        self.status_label.pack(pady=(8, 0))
+
         button_frame = tk.Frame(self.window, bg="#1e1e1e")
         button_frame.pack(pady=10)
 
@@ -433,19 +440,24 @@ class SettingsWindow:
             # Validate and save
             issues = self.config_manager.validate_config()
             if issues:
-                messagebox.showerror("Invalid Settings", "\n".join(issues))
+                self._show_status("\n".join(issues), error=True)
                 return
 
             if self.config_manager.save_config():
-                messagebox.showinfo("Settings", "Settings saved successfully!")
-                self.window.destroy()
+                self._show_status("✓ Settings saved")
+                self.window.after(1000, self.window.destroy)
             else:
-                messagebox.showerror("Error", "Failed to save settings.")
+                self._show_status("Couldn't save settings.", error=True)
 
-        except ValueError as e:
-            messagebox.showerror(
-                "Invalid Input", f"Please check your input values: {e}"
+        except ValueError:
+            self._show_status(
+                "Quality and Audio Delay must be whole numbers (for example 95 or -100).",
+                error=True,
             )
+
+    def _show_status(self, text: str, error: bool = False):
+        """Show a message under the settings (green for OK, red for errors)."""
+        self.status_label.config(text=text, fg="#f87171" if error else "#4ade80")
 
     def _cancel(self):
         """Cancel settings changes."""
