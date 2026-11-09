@@ -12,6 +12,7 @@ status=0
 uv run --quiet python tests/snap/checks.py || status=1
 uv run --quiet python tests/docker/audio_test.py || status=1
 uv run --quiet python tests/docker/sync_test.py || status=1
+uv run --quiet python tests/docker/merge_test.py || status=1
 
 # The real app must still be running after 10 s (no crash on start).
 out=$(timeout 10 uv run --quiet python app.py 2>&1); code=$?
