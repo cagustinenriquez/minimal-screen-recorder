@@ -517,6 +517,19 @@ def _media_duration(path: str) -> float | None:
         return None
 
 
+def _has_video(path: str) -> bool:
+    """True if the file has a video stream with at least one frame."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
+             "stream=codec_type", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return "video" in out.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def merge_audio_video(
     video_path: str,
     audio_path: str,
@@ -553,7 +566,18 @@ def merge_audio_video(
         log_callback=log_callback,
         progress_callback=safe_progress if progress_callback else None,
     )
-    if _merge_once(video_path, audio_path, output_path, video_codec=video_codec, **kwargs):
+    def attempt(codec: str) -> bool:
+        if not _merge_once(video_path, audio_path, output_path, video_codec=codec, **kwargs):
+            return False
+        # ffmpeg can "succeed" with a file that only has sound (e.g. the
+        # recorded video was empty). That's not a usable recording.
+        if not _has_video(output_path):
+            callback_logger.error("✗ Merged file has no video; treating as failed")
+            Path(output_path).unlink(missing_ok=True)
+            return False
+        return True
+
+    if attempt(video_codec):
         return True
     if video_codec == "copy":
         return False
@@ -561,7 +585,7 @@ def merge_audio_video(
     callback_logger.warning("Merge failed; retrying without re-encoding the video")
     safe_progress(0.0, "Retrying (fast mode)...")
     Path(output_path).unlink(missing_ok=True)
-    return _merge_once(video_path, audio_path, output_path, video_codec="copy", **kwargs)
+    return attempt("copy")
 
 
 def _merge_once(

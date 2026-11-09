@@ -31,7 +31,8 @@ uv run app.py
 
 - `tests/docker/run.sh [24.04 26.04]`: runs from source in Docker. Checks, audio routing
   (no doubled loopback, no leftovers), audio/video sync (flash + beep, must be <150 ms) and
-  merge robustness (failing progress update, retry without re-encoding).
+  merge robustness (failing progress update, retry without re-encoding, no-frame video),
+  Wayland capture not freezing before the first picture, and the "no picture" warning.
 - `tests/snap/run-matrix.sh`: installs the built `.snap` in LXD on Ubuntu 22.04/24.04/26.04
   and Debian 13 and runs `tests/snap/checks.py` inside it.
 - The real Wayland screen-share prompt can only be tested by hand on a desktop.
