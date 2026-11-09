@@ -6,6 +6,8 @@ stopped, leaving a video with no sound. Checks that:
   - an error in the progress update doesn't stop the merge
   - if the first merge fails, the fast retry (copying the video) still
     produces a file with sound
+  - a video with no frames is reported as failed, not saved as a sound-only
+    "recording" (what happened in 2.1.3 when the screen capture froze)
 """
 
 import os
@@ -64,6 +66,19 @@ def main():
     record("retry without re-encoding gives sound",
            ok and set(streams(out2)) == {"video", "audio"},
            f"streams: {streams(out2) if os.path.exists(out2) else 'no file'}")
+
+    # 3. Video with no frames (capture froze): opened and closed, nothing written
+    import cv2
+
+    empty = os.path.join(tmp, "empty_temp.avi")
+    writer = cv2.VideoWriter(empty, cv2.VideoWriter_fourcc(*"XVID"), 20, (640, 360))
+    writer.release()
+    out3 = os.path.join(tmp, "out3.mp4")
+    ok = merge_audio_video(empty, audio, out3, video_codec="libx264",
+                           progress_callback=lambda p, i: None)
+    record("video with no frames counts as a failed merge",
+           not ok and not os.path.exists(out3),
+           f"returned {ok}, output exists: {os.path.exists(out3)}")
 
 
 try:

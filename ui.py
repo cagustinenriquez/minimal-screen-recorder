@@ -97,6 +97,15 @@ class ProgressWindow:
         """Update the info label."""
         self.info_label.config(text=text)
 
+    def show_capture_warning(self, text: str | None):
+        """Show (or clear, with None) a warning that the screen isn't captured."""
+        if text:
+            self.status_label.config(text="⚠️ NO PICTURE", fg="#ff6b6b")
+            self.info_label.config(text=text, fg="#ff6b6b", wraplength=280)
+        else:
+            self.status_label.config(text="🔴 RECORDING", fg="#ffffff")
+            self.info_label.config(text="", fg="#ffffff")
+
     def set_paused(self, paused: bool):
         """Update UI for pause state."""
         if paused:
@@ -1124,6 +1133,53 @@ class RecorderApp:
         self.progress_window.cancel_btn.config(command=self.cancel_recording)
 
         self._log("Recording started...")
+        self._watch_frames = -1
+        self._watch_since = None
+        self._capture_warned = False
+        self.root.after(2000, self._watch_capture)
+
+    # Seconds without a new video frame before warning the user
+    CAPTURE_STALL_SECONDS = 6
+
+    def _watch_capture(self):
+        """Warn during the recording if the screen stops being captured.
+
+        Without this, a stuck capture was only noticed after stopping (an
+        18-minute recording came out with sound and no picture).
+        """
+        import time
+
+        rec = self.recorder
+        window = self.progress_window
+        if not rec or not rec.recording or window is None:
+            return
+        now = time.monotonic()
+        frames = rec.frames_recorded
+        if rec.paused or frames != self._watch_frames:
+            self._watch_frames = frames
+            self._watch_since = now
+            if self._capture_warned and not rec.paused:
+                self._capture_warned = False
+                self._log("Screen capture is working again")
+                try:
+                    window.show_capture_warning(None)
+                except tk.TclError:
+                    pass
+        elif (
+            not self._capture_warned
+            and now - self._watch_since >= self.CAPTURE_STALL_SECONDS
+        ):
+            self._capture_warned = True
+            reason = rec.capture_error or "no new frames"
+            self._log(f"WARNING: screen isn't being captured ({reason})")
+            try:
+                window.show_capture_warning(
+                    "The screen isn't being recorded. "
+                    "Stop and start a new recording."
+                )
+            except tk.TclError:
+                pass
+        self.root.after(2000, self._watch_capture)
 
     def stop_recording(self):
         """Stop recording with proper cleanup."""
@@ -1375,6 +1431,25 @@ class RecorderApp:
         self.root.after(0, lambda: messagebox.showwarning("Recording saved", message))
         return video_out
 
+    def _save_sound_only(self, video_file: str, final_output: str) -> str | None:
+        """The screen wasn't captured at all: keep the sound and say so."""
+        import shutil
+
+        self._log("ERROR: No video frames were recorded")
+        Path(video_file).unlink(missing_ok=True)
+        audio_out = None
+        if self.audio_file and Path(self.audio_file).exists():
+            audio_out = str(Path(final_output).with_suffix(".wav"))
+            shutil.move(self.audio_file, audio_out)
+            self._log(f"Saved the sound only: {audio_out}")
+
+        message = "The screen wasn't recorded, so this recording has no picture."
+        if audio_out:
+            message += f"\n\nThe sound was saved as:\n{audio_out}"
+        message += "\n\nPlease report this with \"Report a problem\"."
+        self.root.after(0, lambda: messagebox.showerror("No picture recorded", message))
+        return audio_out
+
     def _process_output(self, video_file: str) -> str | None:
         """Process the recorded output (merge audio/video, cleanup)."""
         # Show processing progress window
@@ -1417,6 +1492,9 @@ class RecorderApp:
 
             self._log(f"Video file: {video_file} ({video_size} bytes)")
             self._log(f"Audio file: {self.audio_file} ({audio_size} bytes)")
+
+            if self.recorder and self.recorder.frames_recorded == 0:
+                return self._save_sound_only(video_file, final_output)
 
             # Merge audio and video if both exist
             if (

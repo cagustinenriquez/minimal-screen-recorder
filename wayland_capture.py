@@ -6,6 +6,7 @@ browsers use) and read frames from it with GStreamer's pipewiresrc.
 """
 
 import logging
+import itertools
 import os
 import threading
 from pathlib import Path
@@ -22,6 +23,10 @@ REQUEST_IFACE = "org.freedesktop.portal.Request"
 SOURCE_MONITOR = 1
 CURSOR_EMBEDDED = 2
 PERSIST_UNTIL_REVOKED = 2
+
+# Portal request names must be unique for the whole process: reusing one from
+# an earlier recording makes the portal reject it ("already exported").
+_token_counter = itertools.count(1)
 
 
 class PortalCaptureError(Exception):
@@ -83,7 +88,6 @@ class PortalFrameSource:
         self.pipeline = None
         self.appsink = None
         self.pw_fd: int | None = None
-        self._token_counter = 0
         self._latest: np.ndarray | None = None
         self._frame_lock = threading.Lock()
         self._frame_ready = threading.Event()
@@ -92,8 +96,7 @@ class PortalFrameSource:
     # ---- portal (D-Bus) -------------------------------------------------
 
     def _new_token(self) -> str:
-        self._token_counter += 1
-        return f"screenrec{os.getpid()}_{self._token_counter}"
+        return f"screenrec{os.getpid()}_{next(_token_counter)}"
 
     def _request_path(self, token: str) -> str:
         sender = self.bus.get_unique_name()[1:].replace(".", "_")
@@ -297,10 +300,13 @@ class PortalFrameSource:
     def grab(self) -> np.ndarray:
         """Return the most recent frame (BGR); black until the first arrives."""
         with self._frame_lock:
-            if self._latest is None:
-                width, height = self.size
-                return np.zeros((height, width, 3), dtype=np.uint8)
-            return self._latest
+            frame = self._latest
+        if frame is not None:
+            return frame
+        # No picture yet. self.size takes the lock itself, so it must be
+        # called after releasing it (calling it inside froze the recording).
+        width, height = self.size
+        return np.zeros((height, width, 3), dtype=np.uint8)
 
     @property
     def size(self) -> tuple[int, int]:
