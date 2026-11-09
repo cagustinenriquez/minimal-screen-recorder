@@ -528,6 +528,53 @@ def merge_audio_video(
     log_callback: Callable[[str], None] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> bool:
+    """Merge audio and video, retrying once without re-encoding the video.
+
+    Re-encoding (e.g. to H.264) is slow for long recordings; if it fails for
+    any reason, copying the recorded video stream as-is takes seconds and
+    still gives a playable file with sound.
+    """
+    logger = logging.getLogger(__name__)
+    callback_logger = CallbackLogger(logger, log_callback)
+
+    def safe_progress(percentage: float, info: str) -> None:
+        # A problem showing progress (e.g. the window was closed) must never
+        # stop the merge itself.
+        if progress_callback:
+            try:
+                progress_callback(percentage, info)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"Progress update failed: {e}")
+
+    kwargs = dict(
+        audio_codec=audio_codec,
+        audio_delay_ms=audio_delay_ms,
+        audio_lead_s=audio_lead_s,
+        log_callback=log_callback,
+        progress_callback=safe_progress if progress_callback else None,
+    )
+    if _merge_once(video_path, audio_path, output_path, video_codec=video_codec, **kwargs):
+        return True
+    if video_codec == "copy":
+        return False
+
+    callback_logger.warning("Merge failed; retrying without re-encoding the video")
+    safe_progress(0.0, "Retrying (fast mode)...")
+    Path(output_path).unlink(missing_ok=True)
+    return _merge_once(video_path, audio_path, output_path, video_codec="copy", **kwargs)
+
+
+def _merge_once(
+    video_path: str,
+    audio_path: str,
+    output_path: str,
+    video_codec: str = "copy",
+    audio_codec: str = "aac",
+    audio_delay_ms: int = 0,
+    audio_lead_s: float = 0.0,
+    log_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> bool:
     """Merge audio and video files using FFmpeg.
 
     audio_lead_s: how many seconds the audio recording started before the
@@ -583,6 +630,12 @@ def merge_audio_video(
         cmd = [
             "ffmpeg",
             "-y",
+            # Only errors on stderr: progress comes through -progress, and a
+            # steady stream of status lines into a pipe can fill it and stall
+            # ffmpeg on long recordings.
+            "-nostats",
+            "-loglevel",
+            "error",
             "-i",
             video_path,
             "-i",

@@ -6,6 +6,8 @@ loopback first, then checks that:
   - setup removes the leftovers (only one loopback, so no doubled audio)
   - the playing app is moved to record_sink
   - the recording has sound
+  - cleanup moves the app back to the speakers before removing record_sink
+    (removing it first makes players like YouTube pause)
   - cleanup leaves no record_sink modules behind
 """
 
@@ -37,6 +39,16 @@ def record_sink_modules():
     sinks = [m for m in mods if m[1] == "module-null-sink" and "sink_name=record_sink" in m[2]]
     loops = [m for m in mods if m[1] == "module-loopback" and "record_sink.monitor" in m[2]]
     return sinks, loops
+
+
+def player_sink():
+    """Name of the sink the paplay stream is playing to, or None."""
+    sinks = {line.split("\t")[0]: line.split("\t")[1]
+             for line in pactl("list", "short", "sinks").splitlines()}
+    for line in pactl("list", "short", "sink-inputs").splitlines():
+        parts = line.split("\t")
+        return sinks.get(parts[1])
+    return None
 
 
 def mean_volume(path):
@@ -101,8 +113,26 @@ def main():
         level = mean_volume(out)
         record("recording has sound", level > -50, f"mean {level:.1f} dB")
     finally:
+        # Watch the order of pactl commands during cleanup
+        commands = []
+        original_run = capture._run_pactl_command
+
+        def logged_run(cmd, *args, **kwargs):
+            commands.append(cmd[1])
+            return original_run(cmd, *args, **kwargs)
+
+        capture._run_pactl_command = logged_run
         capture.cleanup()
+        still_playing = player.poll() is None
+        on_speakers = player_sink() == "test_speakers"
         player.kill()
+
+    first_unload = commands.index("unload-module") if "unload-module" in commands else -1
+    moved_first = "move-sink-input" in commands[:first_unload]
+    record("app moved back before record_sink is removed",
+           moved_first and on_speakers and still_playing,
+           f"moved first: {moved_first}, on speakers: {on_speakers}, "
+           f"still playing: {still_playing}")
 
     sinks, loops = record_sink_modules()
     record("nothing left after cleanup", not sinks and not loops,

@@ -949,7 +949,10 @@ class RecorderApp:
                 # Generate unique audio filename for each recording
                 import time
 
-                self.audio_file = f"temp_audio_{int(time.time())}.wav"
+                # Next to the temp video, not in whatever folder the app started in
+                self.audio_file = str(
+                    Path(temp_video).parent / f"temp_audio_{int(time.time())}.wav"
+                )
             else:
                 temp_video = filedialog.asksaveasfilename(
                     defaultextension=f".{self.config.output_format}",
@@ -968,7 +971,10 @@ class RecorderApp:
                 # Generate unique audio filename for each recording
                 import time
 
-                self.audio_file = f"temp_audio_{int(time.time())}.wav"
+                # Next to the temp video, not in whatever folder the app started in
+                self.audio_file = str(
+                    Path(temp_video).parent / f"temp_audio_{int(time.time())}.wav"
+                )
 
             # Open the screen capture before starting audio, so the time the
             # user spends in the "Share screen" dialog doesn't put audio ahead.
@@ -1236,17 +1242,20 @@ class RecorderApp:
         stop_thread = threading.Thread(target=_stop_recording_thread, daemon=True)
         stop_thread.start()
 
-        # Add a backup cleanup after a reasonable timeout (30 seconds)
-        # This ensures buttons are re-enabled even if something goes wrong
-        # Only trigger if we're not currently recording
+        # Backup: re-enable the buttons if stopping ends without doing it.
+        # Long recordings take minutes to save, so wait while the stop thread
+        # is still working instead of closing its windows mid-merge.
         def _backup_cleanup():
+            if stop_thread.is_alive():
+                self.root.after(10000, _backup_cleanup)
+                return
             if self.start_btn.cget("state") == tk.DISABLED and (
                 not self.recorder or not self.recorder.recording
             ):
                 self.logger.warning("Backup cleanup triggered - re-enabling buttons")
                 self._cleanup_recording()
 
-        self.root.after(30000, _backup_cleanup)  # Increased from 10 to 30 seconds
+        self.root.after(30000, _backup_cleanup)
 
     def cancel_recording(self):
         """Cancel recording without saving."""
@@ -1311,8 +1320,11 @@ class RecorderApp:
         cancel_thread = threading.Thread(target=_cancel_recording_thread, daemon=True)
         cancel_thread.start()
 
-        # Add a backup cleanup after a reasonable timeout (30 seconds)
+        # Backup: re-enable the buttons if cancelling ends without doing it
         def _backup_cleanup():
+            if cancel_thread.is_alive():
+                self.root.after(10000, _backup_cleanup)
+                return
             if self.start_btn.cget("state") == tk.DISABLED and (
                 not self.recorder or not self.recorder.recording
             ):
@@ -1321,7 +1333,7 @@ class RecorderApp:
                 )
                 self._cleanup_recording()
 
-        self.root.after(30000, _backup_cleanup)  # Increased from 10 to 30 seconds
+        self.root.after(30000, _backup_cleanup)
 
     def _audio_lead_seconds(self) -> float:
         """How many seconds the audio started before the first video frame."""
@@ -1336,15 +1348,51 @@ class RecorderApp:
             return 0.0
         return lead
 
+    def _keep_unmerged(self, video_file: str, final_output: str) -> str:
+        """Merging failed: save the video and the sound side by side.
+
+        Nothing is lost: the user gets <name>.avi (video) and <name>.wav
+        (sound) in the recordings folder and a message saying so.
+        """
+        import shutil
+
+        base = Path(final_output).with_suffix("")
+        video_out = str(base.with_suffix(Path(video_file).suffix or ".avi"))
+        shutil.move(video_file, video_out)
+        audio_out = None
+        if self.audio_file and Path(self.audio_file).exists():
+            audio_out = str(base.with_suffix(".wav"))
+            shutil.move(self.audio_file, audio_out)
+        self._log(f"Merge failed; saved video {video_out} and sound {audio_out}")
+
+        message = (
+            "The sound couldn't be added to the video, so they were saved "
+            f"as separate files:\n\nVideo: {video_out}"
+        )
+        if audio_out:
+            message += f"\nSound: {audio_out}"
+        message += "\n\nPlease report this with \"Report a problem\"."
+        self.root.after(0, lambda: messagebox.showwarning("Recording saved", message))
+        return video_out
+
     def _process_output(self, video_file: str) -> str | None:
         """Process the recorded output (merge audio/video, cleanup)."""
         # Show processing progress window
         self.processing_window = ProcessingProgressWindow(self.root)
 
         def progress_callback(percentage: float, info: str):
-            """Update processing progress."""
-            if self.processing_window:
-                self.processing_window.update_progress(percentage, info)
+            """Update processing progress (called from the merge thread)."""
+
+            def _update():
+                window = self.processing_window
+                if window is None:
+                    return
+                try:
+                    window.update_progress(percentage, info)
+                except tk.TclError:
+                    pass  # window already closed; the merge carries on
+
+            self.root.after(0, _update)
 
         try:
             if self.config.auto_increment_filename:
@@ -1410,12 +1458,7 @@ class RecorderApp:
                     cleanup_temp_files(temp_files, self._log)
                     return final_output
                 else:
-                    # Keep original video file if merge failed
-                    self._log("Merge failed, keeping original video file")
-                    import shutil
-
-                    shutil.move(video_file, final_output)
-                    return final_output
+                    return self._keep_unmerged(video_file, final_output)
             else:
                 # Only video, rename to final output
                 missing_files = []
