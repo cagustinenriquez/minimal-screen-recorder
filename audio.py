@@ -145,6 +145,38 @@ class SystemAudioCapture:
             self.callback_logger.error(f"Failed to get sink inputs: {e}")
             return []
 
+    def move_apps_back(self) -> int:
+        """Move every stream playing into record_sink to the real output."""
+        try:
+            sinks = self._run_pactl_command(["pactl", "list", "short", "sinks"])
+            record_ids = [
+                line.split("\t")[0]
+                for line in sinks.stdout.splitlines()
+                if len(line.split("\t")) > 1 and line.split("\t")[1] == "record_sink"
+            ]
+            if not record_ids:
+                return 0
+            target = self.original_default_sink or self.get_real_sink()
+            inputs = self._run_pactl_command(["pactl", "list", "short", "sink-inputs"])
+        except AudioCaptureError as e:
+            self.callback_logger.warning(f"Couldn't move apps back: {e}")
+            return 0
+
+        moved = 0
+        for line in inputs.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) > 1 and parts[1] in record_ids:
+                try:
+                    self._run_pactl_command(
+                        ["pactl", "move-sink-input", parts[0], target]
+                    )
+                    moved += 1
+                except AudioCaptureError as e:
+                    self.callback_logger.warning(f"Couldn't move stream {parts[0]}: {e}")
+        if moved:
+            self.callback_logger.info(f"Moved {moved} app(s) back to {target}")
+        return moved
+
     def move_apps_to_record_sink(self) -> int:
         """Move selected applications to the record sink."""
         moved_count = 0
@@ -414,8 +446,10 @@ class SystemAudioCapture:
         success = True
 
         try:
-            # No need to restore default sink since we never changed it
-            self.callback_logger.debug("Default sink unchanged - no restoration needed")
+            # Move the apps back to the real output *before* removing the
+            # virtual sink. If the sink disappears under them, apps see their
+            # audio device vanish and some pause playback (YouTube in Chrome).
+            self.move_apps_back()
 
             # Unload loopback module
             if self.loopback_module:
