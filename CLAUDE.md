@@ -72,8 +72,10 @@ uv run app.py
 - Nothing goes to the Snap Store or GitHub releases without the user's go-ahead.
   Releases use the `release` skill (`.claude/skills/release/SKILL.md`).
 - Snap specifics:
-  - `audio-record` isn't auto-connected yet (forum request
-    https://forum.snapcraft.io/t/screenrec-lite-auto-connect-audio-record/54086). The app
-    detects it with `snapctl is-connected` and tells the user the `snap connect` command.
+  - `audio-record` is auto-connected by the store since 2026-11-10 (forum request
+    https://forum.snapcraft.io/t/screenrec-lite-auto-connect-audio-record/54086). Local
+    `--dangerous` installs still need `sudo snap connect screenrec-lite:audio-record`, and
+    users can disconnect it, so the app still checks with `snapctl is-connected` and shows
+    the command when it's missing.
   - Keep the `pulseaudio` plug: `pactl load-module` may need it.
   - Inside the snap, `xdg-open` goes through `snapctl user-open`.
