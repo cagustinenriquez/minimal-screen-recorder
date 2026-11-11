@@ -111,16 +111,29 @@ def safe_remove_file(filepath: str, logger: logging.Logger | None = None) -> boo
 
 
 class RecordingTimer:
-    """Timer utility for tracking recording duration."""
+    """Timer utility for tracking recording duration (paused time not counted)."""
 
     def __init__(self):
         self.start_time: float | None = None
         self.is_running = False
+        self.paused_at: float | None = None
 
     def start(self):
         """Start the timer."""
-        self.start_time = time.time()
+        self.start_time = time.monotonic()
+        self.paused_at = None
         self.is_running = True
+
+    def pause(self):
+        """Freeze the elapsed time until resume()."""
+        if self.start_time is not None and self.paused_at is None:
+            self.paused_at = time.monotonic()
+
+    def resume(self):
+        """Continue counting; the paused time is left out."""
+        if self.paused_at is not None:
+            self.start_time += time.monotonic() - self.paused_at
+            self.paused_at = None
 
     def stop(self):
         """Stop the timer."""
@@ -129,13 +142,15 @@ class RecordingTimer:
     def reset(self):
         """Reset the timer."""
         self.start_time = None
+        self.paused_at = None
         self.is_running = False
 
     def get_elapsed(self) -> float:
-        """Get elapsed time in seconds."""
+        """Get elapsed recording time in seconds."""
         if self.start_time is None:
             return 0.0
-        return time.time() - self.start_time
+        now = self.paused_at if self.paused_at is not None else time.monotonic()
+        return now - self.start_time
 
     def get_formatted_elapsed(self) -> str:
         """Get formatted elapsed time."""

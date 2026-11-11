@@ -873,6 +873,12 @@ class RecorderApp:
                 except AudioCaptureError as e:
                     self.logger.warning(f"Audio pause/resume failed: {e}")
 
+            # The on-screen timer skips paused time, like the recording does
+            if self.recorder.paused:
+                self.recording_timer.pause()
+            else:
+                self.recording_timer.resume()
+
             # Update UI
             if self.recorder.paused:
                 self.pause_btn.config(text="▶️ Resume")

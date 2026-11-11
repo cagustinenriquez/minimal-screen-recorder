@@ -6,6 +6,7 @@ Checks that:
   - the recording window warns when no new frames arrive
   - the warning goes away when frames come again
   - a recording with no frames saves the sound as .wav and says so
+  - the recording timer stops counting while paused
 """
 
 import os
@@ -102,6 +103,24 @@ def main():
     record("no-picture recording tells the user",
            bool(shown) and "no picture" in shown[0][1], f"{shown[:1]}")
     root.destroy()
+
+    # Timer: paused time isn't counted
+    from utils import RecordingTimer
+
+    timer = RecordingTimer()
+    timer.start()
+    time.sleep(0.3)
+    timer.pause()
+    paused_value = timer.get_elapsed()
+    time.sleep(0.6)
+    still = timer.get_elapsed()
+    timer.resume()
+    time.sleep(0.3)
+    total = timer.get_elapsed()
+    record("timer stands still while paused", still == paused_value,
+           f"{paused_value:.2f}s -> {still:.2f}s")
+    record("timer leaves paused time out after resuming", 0.55 < total < 0.8,
+           f"{total:.2f}s counted for 0.6s recorded + 0.6s paused")
 
 
 try:
