@@ -7,6 +7,8 @@ Checks that:
   - the warning goes away when frames come again
   - a recording with no frames saves the sound as .wav and says so
   - the recording timer stops counting while paused
+  - closing the window while a recording is being saved waits for the save
+    (closing mid-save cut a 21-minute video in half in 2.1.4)
 """
 
 import os
@@ -123,8 +125,50 @@ def main():
            f"{total:.2f}s counted for 0.6s recorded + 0.6s paused")
 
 
+def closing_test():
+    import threading
+
+    root = tk.Tk()
+    root.withdraw()
+    app = Stub(root)
+    app.recorder = None
+    app.audio_capture = None
+    app.config = SimpleNamespace(remember_window_position=False)
+    app._closing_after_save = False
+    done = threading.Event()
+    app._saving_thread = threading.Thread(target=done.wait, daemon=True)
+    app._saving_thread.start()
+    for name in ("_is_saving", "_close_when_saved", "_finish_closing"):
+        setattr(app, name, getattr(RecorderApp, name).__get__(app))
+    infos = []
+    ui.messagebox.showinfo = lambda title, msg: infos.append(msg)
+
+    def alive():
+        try:
+            return bool(root.winfo_exists())
+        except tk.TclError:
+            return False
+
+    RecorderApp.on_closing(app)
+    pump(root, 1.0)
+    record("closing while saving keeps the app open", alive(),
+           f"told the user: {infos[:1]}")
+    record("closing while saving tells the user", bool(infos) and "saved" in infos[0])
+
+    done.set()
+    end = time.monotonic() + 4
+    while alive() and time.monotonic() < end:
+        try:
+            root.update()
+        except tk.TclError:
+            break
+        time.sleep(0.02)
+    record("app closes by itself once saved", not alive())
+
+
 try:
     main()
+    closing_test()
 except Exception as e:  # noqa: BLE001
     import traceback
     traceback.print_exc()

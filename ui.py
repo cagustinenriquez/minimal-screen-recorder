@@ -486,6 +486,9 @@ class RecorderApp:
         self.root = root
         self.root.title("Advanced Screen + Audio Recorder")
         self.root.configure(bg="#1e1e1e")
+        # Thread saving the last recording, and whether to quit when it's done
+        self._saving_thread: threading.Thread | None = None
+        self._closing_after_save = False
 
         # Initialize components
         self.config_manager = ConfigManager()
@@ -960,9 +963,11 @@ class RecorderApp:
             # Generate output filename
             if self.config.auto_increment_filename:
                 base_name = Path(self.config.output_directory) / "recording"
-                temp_video = f"{base_name}_temp.avi"
-                # Generate unique audio filename for each recording
                 import time
+
+                # Unique per recording: a new recording must never overwrite
+                # the video of one that is still being saved.
+                temp_video = f"{base_name}_temp_{int(time.time())}.avi"
 
                 # Next to the temp video, not in whatever folder the app started in
                 self.audio_file = str(
@@ -1302,6 +1307,7 @@ class RecorderApp:
         import threading
 
         stop_thread = threading.Thread(target=_stop_recording_thread, daemon=True)
+        self._saving_thread = stop_thread
         stop_thread.start()
 
         # Backup: re-enable the buttons if stopping ends without doing it.
@@ -1380,6 +1386,7 @@ class RecorderApp:
         import threading
 
         cancel_thread = threading.Thread(target=_cancel_recording_thread, daemon=True)
+        self._saving_thread = cancel_thread
         cancel_thread.start()
 
         # Backup: re-enable the buttons if cancelling ends without doing it
@@ -1805,19 +1812,47 @@ class RecorderApp:
                 self.config.window_y = int(size_pos[2])
                 self.config_manager.save_config()
 
-        # Stop recording if in progress
+        # Stop recording if in progress; the app closes once it's saved
         if self.recorder and self.recorder.recording:
             if messagebox.askyesno(
                 "Recording in Progress", "Recording is in progress. Stop and exit?"
             ):
                 self.stop_recording()
-            else:
-                return
+                self._close_when_saved()
+            return
 
-        # Clean up
+        # Closing mid-save used to cut the merge off: half a video and
+        # leftover temp files. Finish saving first, then close.
+        if self._is_saving():
+            if not self._closing_after_save:
+                self._close_when_saved()
+                messagebox.showinfo(
+                    "Saving recording",
+                    "Your recording is still being saved.\n"
+                    "The app will close as soon as it's done.",
+                )
+            return
+
+        self._finish_closing()
+
+    def _is_saving(self) -> bool:
+        thread = getattr(self, "_saving_thread", None)
+        return thread is not None and thread.is_alive()
+
+    def _close_when_saved(self):
+        """Close the app once the recording has been saved."""
+        if not self._closing_after_save:
+            self._closing_after_save = True
+            self._log("Closing after the recording is saved")
+        if self._is_saving():
+            self.root.after(500, self._close_when_saved)
+            return
+        # Let the "saved" UI updates queued by the stop thread run first
+        self.root.after(1000, self._finish_closing)
+
+    def _finish_closing(self):
         if self.audio_capture:
             self.audio_capture.cleanup()
-
         self.root.destroy()
 
 
