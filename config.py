@@ -25,6 +25,8 @@ class RecorderConfig:
     audio_delay_ms: int = 0
     # Also record the default microphone (mixed with the app sound)
     record_microphone: bool = False
+    # Which input to record ("" = the system's default input)
+    microphone: str = ""
 
     # UI settings
     theme: str = "dark"

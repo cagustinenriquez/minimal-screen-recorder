@@ -18,6 +18,10 @@ class AudioCaptureError(Exception):
     pass
 
 
+# pactl's output is translated on non-English systems ("Sink Input #" etc.);
+# it's parsed here, so always ask for it in English.
+PACTL_ENV = {**os.environ, "LC_ALL": "C", "LANGUAGE": ""}
+
 SNAP_CONNECT_AUDIO_CMD = "sudo snap connect screenrec-lite:audio-record"
 
 
@@ -40,6 +44,32 @@ def snap_audio_record_missing() -> bool:
         return False
     # Exit code 1 means "not connected"; anything else is treated as unknown.
     return result.returncode == 1
+
+
+def list_microphones() -> list[tuple[str, str]]:
+    """Inputs that can be recorded as a microphone: (name, description).
+
+    Speaker monitors ("Monitor of ...") and the app's own record_sink are
+    left out.
+    """
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "sources"], capture_output=True, text=True,
+            timeout=5, env=PACTL_ENV,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    mics = []
+    name = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Name: "):
+            name = line[len("Name: "):]
+        elif line.startswith("Description: ") and name:
+            if not name.endswith(".monitor") and "record_sink" not in name:
+                mics.append((name, line[len("Description: "):]))
+            name = None
+    return mics
 
 
 class _ParecStream:
@@ -210,6 +240,7 @@ class SystemAudioCapture:
         channels: int = 2,
         log_callback: Callable[[str], None] | None = None,
         record_microphone: bool = False,
+        microphone: str | None = None,
     ):
         self.null_sink_module: str | None = None
         self.loopback_module: str | None = None
@@ -228,6 +259,7 @@ class SystemAudioCapture:
         # loopback would play your voice back on the speakers) and mixed in
         # when the recording stops.
         self.record_microphone = record_microphone
+        self.preferred_mic = microphone or None  # None: the default input
         self.mic_source: str | None = None
         self._mic_stream: _ParecStream | None = None
         self.mic_file: str | None = None
@@ -242,7 +274,8 @@ class SystemAudioCapture:
         """Run a pactl command with proper error handling."""
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, check=True
+                cmd, capture_output=True, text=True, timeout=timeout, check=True,
+                env=PACTL_ENV,
             )
             self.logger.debug(f"Command succeeded: {' '.join(cmd)}")
             return result
@@ -483,7 +516,17 @@ class SystemAudioCapture:
             return False
 
     def get_microphone(self) -> str | None:
-        """The default input device, or None if there's no real microphone."""
+        """The chosen microphone if it's connected, else the default input.
+
+        None if there's no real microphone.
+        """
+        if self.preferred_mic:
+            if any(name == self.preferred_mic for name, _ in list_microphones()):
+                return self.preferred_mic
+            self.callback_logger.warning(
+                f"Chosen microphone isn't connected ({self.preferred_mic}); "
+                "using the default input"
+            )
         try:
             source = self._run_pactl_command(["pactl", "get-default-source"]).stdout.strip()
         except AudioCaptureError as e:

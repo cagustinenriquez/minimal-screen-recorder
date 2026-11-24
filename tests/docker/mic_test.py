@@ -8,6 +8,8 @@ moment. Checks that:
   - the mic isn't played back on the speakers (no echo of your own voice)
   - the separate mic file is removed after mixing
   - cancelling throws the mic recording away
+  - the microphone list leaves out speaker monitors; a chosen mic is used,
+    and an unplugged chosen mic falls back to the default input
 """
 
 import os
@@ -20,7 +22,7 @@ import wave
 import numpy as np
 
 sys.path.insert(0, os.environ.get("APP_DIR", os.getcwd()))
-from audio import SystemAudioCapture  # noqa: E402
+from audio import SystemAudioCapture, list_microphones  # noqa: E402
 
 results = []
 RATE = 48000
@@ -147,8 +149,28 @@ def main():
            bool(mic_file) and not os.path.exists(mic_file), f"{mic_file}")
 
 
+def picker_test():
+    pactl("load-module", "module-null-sink", "sink_name=test_mic2_feed")
+    pactl("load-module", "module-virtual-source", "source_name=test_mic2",
+          "master=test_mic2_feed.monitor")
+    pactl("set-default-source", "test_mic")
+    mics = [name for name, _ in list_microphones()]
+    record("microphone list has the inputs",
+           "test_mic" in mics and "test_mic2" in mics, f"{mics}")
+    record("microphone list leaves out speaker monitors",
+           not any(m.endswith(".monitor") or "record_sink" in m for m in mics))
+
+    chosen = SystemAudioCapture([], record_microphone=True, microphone="test_mic2")
+    record("chosen microphone is used", chosen.get_microphone() == "test_mic2",
+           f"got {chosen.get_microphone()}")
+    gone = SystemAudioCapture([], record_microphone=True, microphone="usb_mic_unplugged")
+    record("unplugged chosen microphone falls back to the default",
+           gone.get_microphone() == "test_mic", f"got {gone.get_microphone()}")
+
+
 try:
     main()
+    picker_test()
 except Exception as e:  # noqa: BLE001
     import traceback
     traceback.print_exc()

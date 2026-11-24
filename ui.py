@@ -13,6 +13,7 @@ from audio import (
     SNAP_CONNECT_AUDIO_CMD,
     AudioCaptureError,
     SystemAudioCapture,
+    list_microphones,
     snap_audio_record_missing,
 )
 from config import ConfigManager
@@ -627,18 +628,29 @@ class RecorderApp:
             font=("Arial", 8),
         )
         self.toggle_sources_btn.pack(side=tk.LEFT, padx=(10, 0))
+        row += 1
 
+        # Microphone: on/off and which input
+        mic_frame = tk.Frame(main_frame, bg="#1e1e1e")
+        mic_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 5))
         self.mic_var = tk.BooleanVar(value=self.config.record_microphone)
         tk.Checkbutton(
-            audio_header_frame,
-            text="🎤 Record my microphone",
+            mic_frame,
+            text="🎤 Record my microphone:",
             variable=self.mic_var,
             command=self._on_mic_toggled,
             bg="#1e1e1e",
             fg="#cccccc",
             selectcolor="#2e2e2e",
             activebackground="#333333",
-        ).pack(side=tk.LEFT, padx=(15, 0))
+        ).pack(side=tk.LEFT)
+        self.mic_combo = ttk.Combobox(
+            mic_frame, state="readonly", width=30,
+            postcommand=self._refresh_microphones,
+        )
+        self.mic_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self.mic_combo.bind("<<ComboboxSelected>>", self._on_mic_selected)
+        self._refresh_microphones()
         row += 1
 
         # Audio apps checkboxes, in a scrollable box
@@ -824,6 +836,26 @@ class RecorderApp:
         self.config.record_microphone = self.mic_var.get()
         self.config_manager.save_config()
 
+    def _refresh_microphones(self):
+        """Fill the microphone list (runs each time it's opened, so a USB
+        mic plugged in later shows up)."""
+        self._mics = [("", "Default input")] + list_microphones()
+        labels = [desc for _, desc in self._mics]
+        chosen = self.config.microphone
+        if chosen and chosen not in [name for name, _ in self._mics]:
+            # Remembered mic is unplugged right now: keep it, marked
+            self._mics.append((chosen, f"{chosen} (not connected)"))
+            labels.append(self._mics[-1][1])
+        self.mic_combo["values"] = labels
+        names = [name for name, _ in self._mics]
+        self.mic_combo.current(names.index(chosen) if chosen in names else 0)
+
+    def _on_mic_selected(self, _event=None):
+        index = self.mic_combo.current()
+        if 0 <= index < len(self._mics):
+            self.config.microphone = self._mics[index][0]
+            self.config_manager.save_config()
+
     def _toggle_sources_visibility(self):
         """Toggle the visibility of audio sources checkboxes."""
         if self.sources_visible.get():
@@ -967,6 +999,7 @@ class RecorderApp:
                     channels=self.config.audio_channels,
                     log_callback=self._log,
                     record_microphone=record_mic,
+                    microphone=self.config.microphone,
                 )
 
                 if not self.audio_capture.setup():
