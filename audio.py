@@ -42,6 +42,118 @@ def snap_audio_record_missing() -> bool:
     return result.returncode == 1
 
 
+class _ParecStream:
+    """Records one PulseAudio/PipeWire source to a WAV file with parec.
+
+    parec streams raw audio with a small buffer and this class writes the
+    WAV file itself. Knowing when each chunk arrives gives the real time of
+    the first sample (start_time), used to line recordings up.
+    """
+
+    def __init__(self, device: str, output_file: str, sample_rate: int,
+                 channels: int, logger: CallbackLogger):
+        self.device = device
+        self.output_file = output_file
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.log = logger
+        self.proc: subprocess.Popen | None = None
+        self.start_time: float | None = None
+        self.paused = False
+        self._writer: threading.Thread | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=20)
+
+    def start(self, wait: float = 5.0) -> None:
+        cmd = [
+            "parec",
+            f"--device={self.device}",
+            "--raw",
+            "--format=s16le",
+            f"--rate={self.sample_rate}",
+            f"--channels={self.channels}",
+            "--latency-msec=20",
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        wav = wave.open(self.output_file, "wb")
+        wav.setnchannels(self.channels)
+        wav.setsampwidth(2)
+        wav.setframerate(self.sample_rate)
+        self._writer = threading.Thread(
+            target=self._write_audio, args=(proc, wav), daemon=True
+        )
+        self._writer.start()
+        threading.Thread(target=self._read_errors, args=(proc,), daemon=True).start()
+        self.proc = proc
+
+        # Wait until audio actually flows (or parec fails)
+        deadline = time.monotonic() + wait
+        while self.start_time is None and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                time.sleep(0.1)  # let the reader collect the error message
+                stderr = "\n".join(self._stderr_tail) or "Unknown error"
+                raise AudioCaptureError(f"parec failed to start: {stderr}")
+            time.sleep(0.01)
+        if self.start_time is None:
+            self.log.warning(f"No audio data yet from {self.device} after {wait:.0f} s")
+
+    def _write_audio(self, proc: subprocess.Popen, wav: "wave.Wave_write") -> None:
+        """Copy parec's audio into the WAV file until parec exits.
+
+        Each sample's time is first_sample_time + index / rate. Every chunk
+        that arrives gives an upper bound for first_sample_time (it can't
+        have arrived before it was recorded); the smallest one over the
+        first second is the closest estimate. While paused, audio is read
+        and thrown away.
+        """
+        bytes_per_frame = 2 * self.channels
+        frames_read = 0
+        pending = b""
+        fd = proc.stdout.fileno()
+        try:
+            while True:
+                data = os.read(fd, 65536)
+                if not data:
+                    break
+                now = time.time()
+                data = pending + data
+                usable = len(data) - len(data) % bytes_per_frame
+                data, pending = data[:usable], data[usable:]
+                frames_read += usable // bytes_per_frame
+                if frames_read <= self.sample_rate:  # first second
+                    estimate = now - frames_read / self.sample_rate
+                    if self.start_time is None or estimate < self.start_time:
+                        self.start_time = estimate
+                if not self.paused:
+                    wav.writeframes(data)
+        except Exception as e:
+            self.log.error(f"Audio writing failed: {e}")
+        finally:
+            wav.close()
+
+    def _read_errors(self, proc: subprocess.Popen) -> None:
+        """Keep parec's last messages for error reports."""
+        for line in proc.stderr:
+            self._stderr_tail.append(line.decode(errors="replace").rstrip())
+
+    def stop(self) -> None:
+        proc = self.proc
+        if not proc:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.log.warning("parec didn't stop, killing it")
+                proc.kill()
+                proc.wait(timeout=2)
+            if self._writer:
+                self._writer.join(timeout=5)
+        finally:
+            self.proc = None
+            self.paused = False
+
+
 class SystemAudioCapture:
     """Handles system audio capture using PulseAudio."""
 
@@ -51,6 +163,7 @@ class SystemAudioCapture:
         sample_rate: int = 48000,
         channels: int = 2,
         log_callback: Callable[[str], None] | None = None,
+        record_microphone: bool = False,
     ):
         self.null_sink_module: str | None = None
         self.loopback_module: str | None = None
@@ -64,7 +177,14 @@ class SystemAudioCapture:
         # Wall-clock time (time.time()) of the first recorded audio sample,
         # measured while recording. Used to line the audio up with the video.
         self.start_time: float | None = None
-        self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._app_stream: _ParecStream | None = None
+        # Microphone: recorded separately (never through record_sink, whose
+        # loopback would play your voice back on the speakers) and mixed in
+        # when the recording stops.
+        self.record_microphone = record_microphone
+        self.mic_source: str | None = None
+        self._mic_stream: _ParecStream | None = None
+        self.mic_file: str | None = None
 
         # Set up logging
         self.logger = logging.getLogger(__name__)
@@ -291,8 +411,19 @@ class SystemAudioCapture:
                 f"Keeping {self.original_default_sink} as default output"
             )
 
+            if self.record_microphone:
+                self.mic_source = self.get_microphone()
+                if self.mic_source:
+                    self.callback_logger.info(f"Microphone: {self.mic_source}")
+                else:
+                    self.callback_logger.warning(
+                        "No microphone found; recording without it"
+                    )
+
             # Move existing apps to record sink
-            moved_count = self.move_apps_to_record_sink()
+            moved_count = (
+                self.move_apps_to_record_sink() if self.apps_to_capture else 0
+            )
 
             self.is_setup = True
             self.callback_logger.info(
@@ -305,103 +436,57 @@ class SystemAudioCapture:
             self.cleanup()  # Clean up any partial setup
             return False
 
-    def start_recording(self, output_file: str) -> subprocess.Popen | None:
-        """Start recording record_sink to a WAV file.
+    def get_microphone(self) -> str | None:
+        """The default input device, or None if there's no real microphone."""
+        try:
+            source = self._run_pactl_command(["pactl", "get-default-source"]).stdout.strip()
+        except AudioCaptureError as e:
+            self.callback_logger.warning(f"Couldn't find the microphone: {e}")
+            return None
+        # With no microphone the default source is a speaker monitor or our
+        # own record_sink; recording that would duplicate the app sound.
+        if not source or source.endswith(".monitor") or "record_sink" in source:
+            return None
+        return source
 
-        parec streams raw audio with a small buffer and this class writes the
-        WAV file itself. Knowing when each chunk arrives gives the real time
-        of the first sample (start_time), which is used to line the audio up
-        with the video.
-        """
+    def start_recording(self, output_file: str) -> subprocess.Popen | None:
+        """Start recording record_sink (and the microphone) to WAV files."""
         if not self.is_setup:
             raise AudioCaptureError("Audio capture not set up. Call setup() first.")
 
+        self.start_time = None
+        self.paused = False
         try:
-            cmd = [
-                "parec",
-                "--device=record_sink.monitor",
-                "--raw",
-                "--format=s16le",
-                f"--rate={self.sample_rate}",
-                f"--channels={self.channels}",
-                "--latency-msec=20",
-            ]
-            self.start_time = None
-            self.paused = False
-            self._stderr_tail.clear()
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            stream = _ParecStream(
+                "record_sink.monitor", output_file, self.sample_rate,
+                self.channels, self.callback_logger,
             )
-            wav = wave.open(output_file, "wb")
-            wav.setnchannels(self.channels)
-            wav.setsampwidth(2)
-            wav.setframerate(self.sample_rate)
-            self._writer_thread = threading.Thread(
-                target=self._write_audio, args=(proc, wav), daemon=True
-            )
-            self._writer_thread.start()
-            threading.Thread(
-                target=self._read_errors, args=(proc,), daemon=True
-            ).start()
-
-            # Wait until audio actually flows (or parec fails)
-            deadline = time.monotonic() + 5.0
-            while self.start_time is None and time.monotonic() < deadline:
-                if proc.poll() is not None:
-                    time.sleep(0.1)  # let the reader collect the error message
-                    stderr = "\n".join(self._stderr_tail) or "Unknown error"
-                    raise AudioCaptureError(f"parec failed to start: {stderr}")
-                time.sleep(0.01)
-            if self.start_time is None:
-                self.callback_logger.warning("No audio data yet after 5 seconds")
-
-            self.recording_process = proc
+            stream.start()
+            self._app_stream = stream
+            self.start_time = stream.start_time
+            self.recording_process = stream.proc
             self.callback_logger.info("Audio recording started")
-            return proc
-
         except AudioCaptureError:
             raise
         except Exception as e:
             raise AudioCaptureError(f"Failed to start audio recording: {e}")
 
-    def _write_audio(self, proc: subprocess.Popen, wav: "wave.Wave_write") -> None:
-        """Copy parec's audio into the WAV file until parec exits.
-
-        Each sample's time is first_sample_time + index / rate. Every chunk
-        that arrives gives an upper bound for first_sample_time (it can't
-        have arrived before it was recorded); the smallest one over the
-        first second is the closest estimate. While paused, audio is read
-        and thrown away.
-        """
-        bytes_per_frame = 2 * self.channels
-        frames_read = 0
-        pending = b""
-        fd = proc.stdout.fileno()
-        try:
-            while True:
-                data = os.read(fd, 65536)
-                if not data:
-                    break
-                now = time.time()
-                data = pending + data
-                usable = len(data) - len(data) % bytes_per_frame
-                data, pending = data[:usable], data[usable:]
-                frames_read += usable // bytes_per_frame
-                if frames_read <= self.sample_rate:  # first second
-                    estimate = now - frames_read / self.sample_rate
-                    if self.start_time is None or estimate < self.start_time:
-                        self.start_time = estimate
-                if not self.paused:
-                    wav.writeframes(data)
-        except Exception as e:
-            self.callback_logger.error(f"Audio writing failed: {e}")
-        finally:
-            wav.close()
-
-    def _read_errors(self, proc: subprocess.Popen) -> None:
-        """Keep parec's last messages for error reports."""
-        for line in proc.stderr:
-            self._stderr_tail.append(line.decode(errors="replace").rstrip())
+        if self.mic_source:
+            self.mic_file = str(output_file).removesuffix(".wav") + "_mic.wav"
+            mic = _ParecStream(
+                self.mic_source, self.mic_file, self.sample_rate,
+                self.channels, self.callback_logger,
+            )
+            try:
+                mic.start()
+                self._mic_stream = mic
+                self.callback_logger.info("Microphone recording started")
+            except Exception as e:  # noqa: BLE001
+                # The recording goes on without the mic rather than failing
+                self.callback_logger.warning(f"Microphone recording failed: {e}")
+                mic.stop()
+                self._remove_mic_file()
+        return self.recording_process
 
     def pause_recording(self) -> None:
         """Pause or resume the audio recording."""
@@ -410,36 +495,94 @@ class SystemAudioCapture:
         # Video pausing only skips frames, so audio does the same: parec keeps
         # running and the audio it sends while paused is dropped.
         self.paused = not self.paused
+        for stream in (self._app_stream, self._mic_stream):
+            if stream:
+                stream.paused = self.paused
         self.callback_logger.info(
             "Audio recording paused" if self.paused else "Audio recording resumed"
         )
 
-    def stop_recording(self) -> None:
-        """Stop recording and finish the WAV file."""
-        proc = self.recording_process
-        if not proc:
-            return
+    def stop_recording(self, mix_microphone: bool = True) -> None:
+        """Stop recording and finish the WAV file (with the mic mixed in)."""
         try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.callback_logger.warning("parec didn't stop, killing it")
-                proc.kill()
-                proc.wait(timeout=2)
-            writer = getattr(self, "_writer_thread", None)
-            if writer:
-                writer.join(timeout=5)
-            self.callback_logger.info("Audio recording stopped")
+            for stream in (self._app_stream, self._mic_stream):
+                if stream:
+                    stream.stop()
+            if self._app_stream:
+                # The first-sample estimate keeps improving for a second
+                self.start_time = self._app_stream.start_time
+                self.callback_logger.info("Audio recording stopped")
         except Exception as e:
             self.callback_logger.error(f"Error stopping audio recording: {e}")
-            try:
-                proc.kill()
-            except Exception:
-                pass
         finally:
             self.recording_process = None
             self.paused = False
+
+        if self._mic_stream:
+            if mix_microphone and self._app_stream:
+                self._mix_microphone()
+            else:
+                self._remove_mic_file()
+        self._app_stream = None
+        self._mic_stream = None
+
+    def _remove_mic_file(self) -> None:
+        if self.mic_file:
+            try:
+                os.remove(self.mic_file)
+            except OSError:
+                pass
+        self.mic_file = None
+
+    def _mix_microphone(self) -> None:
+        """Mix the mic recording into the app recording, lined up in time.
+
+        If mixing fails the mic recording is kept as <audio>_mic.wav so
+        nothing is lost.
+        """
+        app_file = self._app_stream.output_file
+        app_start = self._app_stream.start_time
+        mic_start = self._mic_stream.start_time
+        if app_start is None or mic_start is None:
+            offset = 0.0
+            self.callback_logger.warning("Couldn't time the microphone; mixing unaligned")
+        else:
+            offset = mic_start - app_start  # > 0: the mic started later
+        if offset >= 0.001:
+            mic_chain = f"[1:a]adelay={offset * 1000:.0f}:all=1[mic]"
+        elif offset <= -0.001:
+            mic_chain = f"[1:a]atrim=start={-offset:.3f},asetpts=PTS-STARTPTS[mic]"
+        else:
+            mic_chain = "[1:a]anull[mic]"
+        mixed = app_file.removesuffix(".wav") + "_mixed.wav"
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-nostats", "-loglevel", "error",
+            "-i", app_file, "-i", self.mic_file,
+            "-filter_complex",
+            # duration=first: the app recording is the timing reference.
+            # normalize=0: keep both at their own volume instead of halving.
+            f"{mic_chain};[0:a][mic]amix=inputs=2:duration=first:"
+            "dropout_transition=0:normalize=0[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le", mixed,
+        ]
+        self.callback_logger.info(
+            f"Mixing in the microphone (offset {offset * 1000:.0f} ms)..."
+        )
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if result.returncode != 0:
+                raise AudioCaptureError(result.stderr.strip()[-300:])
+            os.replace(mixed, app_file)
+            self.callback_logger.info("Microphone mixed in")
+            self._remove_mic_file()
+        except Exception as e:  # noqa: BLE001
+            self.callback_logger.error(
+                f"Couldn't mix in the microphone ({e}); kept it as {self.mic_file}"
+            )
+            try:
+                os.remove(mixed)
+            except OSError:
+                pass
 
     def cleanup(self) -> bool:
         """Clean up audio capture environment."""

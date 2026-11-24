@@ -12,7 +12,9 @@ Repo: github.com/cagustinenriquez/minimal-screen-recorder. Store account: `agust
   retries once with `-c:v copy` if the H.264 re-encode fails; if both fail, `ui._keep_unmerged`
   saves `<name>.avi` + `<name>.wav` side by side and tells the user
 - `wayland_capture.py`: Wayland capture via the ScreenCast portal + GStreamer pipewiresrc
-- `audio.py`: routes chosen apps to a `record_sink` null sink, records it with `parec`
+- `audio.py`: routes chosen apps to a `record_sink` null sink, records it with `parec`.
+  "Record my microphone" records the default input with a second `parec` (never through
+  `record_sink`: its loopback would play the mic on the speakers) and mixes it in on Stop
 - `snap_compat.py`: makes `ctypes.util.find_library` work inside the snap (needed by mss)
 - `config.py`: settings in `recorder_config.json`
 - `snap/snapcraft.yaml`: core24 + gnome extension; `snap/gui/`: .desktop and icon

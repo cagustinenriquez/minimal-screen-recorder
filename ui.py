@@ -627,6 +627,18 @@ class RecorderApp:
             font=("Arial", 8),
         )
         self.toggle_sources_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.mic_var = tk.BooleanVar(value=self.config.record_microphone)
+        tk.Checkbutton(
+            audio_header_frame,
+            text="🎤 Record my microphone",
+            variable=self.mic_var,
+            command=self._on_mic_toggled,
+            bg="#1e1e1e",
+            fg="#cccccc",
+            selectcolor="#2e2e2e",
+            activebackground="#333333",
+        ).pack(side=tk.LEFT, padx=(15, 0))
         row += 1
 
         # Audio apps checkboxes, in a scrollable box
@@ -807,6 +819,11 @@ class RecorderApp:
         if hasattr(self, "screen_combo"):
             self.selected_screen_index.set(self.screen_combo.current() + 1)
 
+    def _on_mic_toggled(self):
+        """Remember the microphone choice."""
+        self.config.record_microphone = self.mic_var.get()
+        self.config_manager.save_config()
+
     def _toggle_sources_visibility(self):
         """Toggle the visibility of audio sources checkboxes."""
         if self.sources_visible.get():
@@ -917,7 +934,8 @@ class RecorderApp:
             selected_apps = [
                 app for app, var in self.app_checkboxes.items() if var.get()
             ]
-            if not selected_apps:
+            record_mic = self.mic_var.get()
+            if not selected_apps and not record_mic:
                 if not messagebox.askyesno(
                     "No Audio Sources",
                     "No audio sources selected. Continue with video only?",
@@ -926,10 +944,11 @@ class RecorderApp:
 
             # In the snap, audio capture needs a permission the user may not
             # have granted yet; without it recordings would be silent.
-            if selected_apps and snap_audio_record_missing():
+            if (selected_apps or record_mic) and snap_audio_record_missing():
                 if self._ask_audio_permission() != "video":
                     return
                 selected_apps = []
+                record_mic = False
 
             # Initialize recorder
             self.recorder = ScreenRecorder(
@@ -940,13 +959,14 @@ class RecorderApp:
                 log_callback=self._log,
             )
 
-            # Initialize audio capture if apps selected
-            if selected_apps:
+            # Initialize audio capture if apps or the microphone are selected
+            if selected_apps or record_mic:
                 self.audio_capture = SystemAudioCapture(
                     selected_apps,
                     sample_rate=self.config.audio_sample_rate,
                     channels=self.config.audio_channels,
                     log_callback=self._log,
+                    record_microphone=record_mic,
                 )
 
                 if not self.audio_capture.setup():
@@ -1347,7 +1367,7 @@ class RecorderApp:
 
                 # Stop audio
                 if self.audio_capture:
-                    self.audio_capture.stop_recording()
+                    self.audio_capture.stop_recording(mix_microphone=False)
                     self.audio_capture.cleanup()
                     self.audio_capture = None
 

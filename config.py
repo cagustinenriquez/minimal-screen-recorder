@@ -23,6 +23,8 @@ class RecorderConfig:
     audio_bitrate: str = "128k"
     # Extra audio shift in ms on top of the automatic sync (+ later, - earlier)
     audio_delay_ms: int = 0
+    # Also record the default microphone (mixed with the app sound)
+    record_microphone: bool = False
 
     # UI settings
     theme: str = "dark"
