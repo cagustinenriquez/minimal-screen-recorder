@@ -50,8 +50,13 @@ class _ParecStream:
     the first sample (start_time), used to line recordings up.
     """
 
+    # How often a watched device is checked, and how much audio is held back
+    # before writing so the part recorded after it vanished can be dropped.
+    WATCH_INTERVAL = 0.2
+    HOLD_BACK = 0.5
+
     def __init__(self, device: str, output_file: str, sample_rate: int,
-                 channels: int, logger: CallbackLogger):
+                 channels: int, logger: CallbackLogger, watch: bool = False):
         self.device = device
         self.output_file = output_file
         self.sample_rate = sample_rate
@@ -62,6 +67,11 @@ class _ParecStream:
         self.paused = False
         self._writer: threading.Thread | None = None
         self._stderr_tail: deque[str] = deque(maxlen=20)
+        # watch: stop if the device disappears (USB unplugged). Otherwise the
+        # sound server moves the recording to another input, which can be a
+        # speaker monitor and would record the app sound a second time.
+        self.watch = watch
+        self.lost = False
 
     def start(self, wait: float = 5.0) -> None:
         cmd = [
@@ -84,6 +94,8 @@ class _ParecStream:
         self._writer.start()
         threading.Thread(target=self._read_errors, args=(proc,), daemon=True).start()
         self.proc = proc
+        if self.watch:
+            threading.Thread(target=self._watch_device, args=(proc,), daemon=True).start()
 
         # Wait until audio actually flows (or parec fails)
         deadline = time.monotonic() + wait
@@ -93,7 +105,7 @@ class _ParecStream:
                 stderr = "\n".join(self._stderr_tail) or "Unknown error"
                 raise AudioCaptureError(f"parec failed to start: {stderr}")
             time.sleep(0.01)
-        if self.start_time is None:
+        if self.start_time is None and wait > 0:
             self.log.warning(f"No audio data yet from {self.device} after {wait:.0f} s")
 
     def _write_audio(self, proc: subprocess.Popen, wav: "wave.Wave_write") -> None:
@@ -108,6 +120,12 @@ class _ParecStream:
         bytes_per_frame = 2 * self.channels
         frames_read = 0
         pending = b""
+        # Watched devices: keep the newest HOLD_BACK seconds unwritten, so
+        # they can be dropped if the device turns out to have vanished.
+        hold_bytes = (
+            int(self.HOLD_BACK * self.sample_rate) * bytes_per_frame if self.watch else 0
+        )
+        held = bytearray()
         fd = proc.stdout.fileno()
         try:
             while True:
@@ -123,12 +141,40 @@ class _ParecStream:
                     estimate = now - frames_read / self.sample_rate
                     if self.start_time is None or estimate < self.start_time:
                         self.start_time = estimate
-                if not self.paused:
-                    wav.writeframes(data)
+                if self.paused or self.lost:
+                    continue
+                held += data
+                if len(held) > hold_bytes:
+                    cut = len(held) - hold_bytes
+                    wav.writeframes(bytes(held[:cut]))
+                    del held[:cut]
+            if held and not self.lost:
+                wav.writeframes(bytes(held))
         except Exception as e:
             self.log.error(f"Audio writing failed: {e}")
         finally:
             wav.close()
+
+    def _watch_device(self, proc: subprocess.Popen) -> None:
+        """Stop recording if the device disappears (e.g. USB unplugged)."""
+        while proc.poll() is None:
+            time.sleep(self.WATCH_INTERVAL)
+            try:
+                out = subprocess.run(
+                    ["pactl", "list", "short", "sources"],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            present = any(
+                len(parts) > 1 and parts[1] == self.device
+                for parts in (line.split("\t") for line in out.splitlines())
+            )
+            if not present and proc.poll() is None:
+                self.lost = True
+                self.log.warning(f"{self.device} was disconnected; its recording stops here")
+                proc.terminate()
+                return
 
     def _read_errors(self, proc: subprocess.Popen) -> None:
         """Keep parec's last messages for error reports."""
@@ -475,10 +521,13 @@ class SystemAudioCapture:
             self.mic_file = str(output_file).removesuffix(".wav") + "_mic.wav"
             mic = _ParecStream(
                 self.mic_source, self.mic_file, self.sample_rate,
-                self.channels, self.callback_logger,
+                self.channels, self.callback_logger, watch=True,
             )
             try:
-                mic.start()
+                # Wait until the mic sends sound: right after waking up some
+                # inputs deliver a burst of delayed audio, which would throw
+                # off its timing. Capped so a slow mic can't hold up the video.
+                mic.start(wait=2.0)
                 self._mic_stream = mic
                 self.callback_logger.info("Microphone recording started")
             except Exception as e:  # noqa: BLE001
@@ -519,7 +568,13 @@ class SystemAudioCapture:
             self.paused = False
 
         if self._mic_stream:
-            if mix_microphone and self._app_stream:
+            if self._mic_stream.start_time is None:
+                tail = "; ".join(self._mic_stream._stderr_tail)
+                self.callback_logger.warning(
+                    f"The microphone sent no sound; recording without it {tail}".strip()
+                )
+                self._remove_mic_file()
+            elif mix_microphone and self._app_stream:
                 self._mix_microphone()
             else:
                 self._remove_mic_file()
@@ -543,9 +598,9 @@ class SystemAudioCapture:
         app_file = self._app_stream.output_file
         app_start = self._app_stream.start_time
         mic_start = self._mic_stream.start_time
-        if app_start is None or mic_start is None:
+        if app_start is None:
             offset = 0.0
-            self.callback_logger.warning("Couldn't time the microphone; mixing unaligned")
+            self.callback_logger.warning("Couldn't time the app sound; mixing unaligned")
         else:
             offset = mic_start - app_start  # > 0: the mic started later
         if offset >= 0.001:
