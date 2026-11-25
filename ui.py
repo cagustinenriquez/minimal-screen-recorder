@@ -490,6 +490,8 @@ class RecorderApp:
         # Thread saving the last recording, and whether to quit when it's done
         self._saving_thread: threading.Thread | None = None
         self._closing_after_save = False
+        self._session = 0
+        self._audio_wanted = False
 
         # Initialize components
         self.config_manager = ConfigManager()
@@ -634,7 +636,7 @@ class RecorderApp:
         mic_frame = tk.Frame(main_frame, bg="#1e1e1e")
         mic_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 5))
         self.mic_var = tk.BooleanVar(value=self.config.record_microphone)
-        tk.Checkbutton(
+        self.mic_check = tk.Checkbutton(
             mic_frame,
             text="🎤 Record my microphone:",
             variable=self.mic_var,
@@ -643,7 +645,9 @@ class RecorderApp:
             fg="#cccccc",
             selectcolor="#2e2e2e",
             activebackground="#333333",
-        ).pack(side=tk.LEFT)
+            disabledforeground="#777777",
+        )
+        self.mic_check.pack(side=tk.LEFT)
         self.mic_combo = ttk.Combobox(
             mic_frame, state="readonly", width=30,
             postcommand=self._refresh_microphones,
@@ -946,6 +950,10 @@ class RecorderApp:
         """Start recording with enhanced error handling."""
         try:
             self._log("=== START RECORDING CALLED ===")
+            # Each recording gets a number. Delayed backup cleanups from an
+            # earlier recording check it, so they can't tear down this one.
+            self._session += 1
+            self._audio_wanted = False
 
             # Check if already recording
             if self.recorder and self.recorder.recording:
@@ -1002,6 +1010,7 @@ class RecorderApp:
                     microphone=self.config.microphone,
                 )
 
+                self._audio_wanted = True
                 if not self.audio_capture.setup():
                     messagebox.showerror(
                         "Audio Setup Failed",
@@ -1012,6 +1021,7 @@ class RecorderApp:
                     ):
                         return
                     self.audio_capture = None
+                    self._audio_wanted = False
 
             # Generate output filename
             if self.config.auto_increment_filename:
@@ -1183,6 +1193,9 @@ class RecorderApp:
 
         # Update UI
         self.start_btn.config(state=tk.DISABLED)
+        # Mic changes can't apply mid-recording; lock them until it ends
+        self.mic_check.config(state=tk.DISABLED)
+        self.mic_combo.config(state=tk.DISABLED)
         self.pause_btn.config(state=tk.NORMAL, text="⏸️ Pause")
         self.stop_btn.config(state=tk.NORMAL)
         self.cancel_btn.config(state=tk.NORMAL)
@@ -1363,20 +1376,8 @@ class RecorderApp:
         self._saving_thread = stop_thread
         stop_thread.start()
 
-        # Backup: re-enable the buttons if stopping ends without doing it.
-        # Long recordings take minutes to save, so wait while the stop thread
-        # is still working instead of closing its windows mid-merge.
-        def _backup_cleanup():
-            if stop_thread.is_alive():
-                self.root.after(10000, _backup_cleanup)
-                return
-            if self.start_btn.cget("state") == tk.DISABLED and (
-                not self.recorder or not self.recorder.recording
-            ):
-                self.logger.warning("Backup cleanup triggered - re-enabling buttons")
-                self._cleanup_recording()
-
-        self.root.after(30000, _backup_cleanup)
+        # Backup: re-enable the buttons if stopping ends without doing it
+        self._schedule_backup_cleanup(stop_thread, "after stop")
 
     def cancel_recording(self):
         """Cancel recording without saving."""
@@ -1443,19 +1444,7 @@ class RecorderApp:
         cancel_thread.start()
 
         # Backup: re-enable the buttons if cancelling ends without doing it
-        def _backup_cleanup():
-            if cancel_thread.is_alive():
-                self.root.after(10000, _backup_cleanup)
-                return
-            if self.start_btn.cget("state") == tk.DISABLED and (
-                not self.recorder or not self.recorder.recording
-            ):
-                self.logger.warning(
-                    "Backup cleanup triggered after cancel - re-enabling buttons"
-                )
-                self._cleanup_recording()
-
-        self.root.after(30000, _backup_cleanup)
+        self._schedule_backup_cleanup(cancel_thread, "after cancel")
 
     def _audio_lead_seconds(self) -> float:
         """How many seconds the audio started before the first video frame."""
@@ -1613,6 +1602,12 @@ class RecorderApp:
 
                 if missing_files:
                     self._log(f"Missing files: {', '.join(missing_files)}")
+                if "audio" in missing_files and self._audio_wanted:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "Recorded without sound",
+                        "The sound couldn't be recorded, so this video has no "
+                        "sound.\n\nPlease report this with \"Report a problem\".",
+                    ))
 
                 if Path(video_file).exists():
                     import shutil
@@ -1681,6 +1676,8 @@ class RecorderApp:
 
         # Update UI
         self.start_btn.config(state=tk.NORMAL)
+        self.mic_check.config(state=tk.NORMAL)
+        self.mic_combo.config(state="readonly")
         self.pause_btn.config(state=tk.DISABLED, text="⏸️ Pause")
         self.stop_btn.config(state=tk.DISABLED, text="⏹️ Stop Recording")
         self.cancel_btn.config(state=tk.DISABLED, text="❌ Cancel")
@@ -1887,6 +1884,32 @@ class RecorderApp:
             return
 
         self._finish_closing()
+
+    BACKUP_CLEANUP_MS = 30000
+
+    def _schedule_backup_cleanup(self, thread: threading.Thread, label: str):
+        """Re-enable the buttons if stopping/cancelling ends without doing it.
+
+        Long recordings take minutes to save, so it waits while the thread is
+        still working. It only ever cleans up its own recording: in 2.1.x it
+        fired 30 s after Stop even if a new recording had started meanwhile,
+        and tore down that recording's audio.
+        """
+        session = self._session
+
+        def _backup_cleanup():
+            if self._session != session:
+                return  # a new recording started; it isn't ours to clean up
+            if thread.is_alive():
+                self.root.after(10000, _backup_cleanup)
+                return
+            if self.start_btn.cget("state") == tk.DISABLED and (
+                not self.recorder or not self.recorder.recording
+            ):
+                self.logger.warning(f"Backup cleanup triggered {label} - re-enabling buttons")
+                self._cleanup_recording()
+
+        self.root.after(self.BACKUP_CLEANUP_MS, _backup_cleanup)
 
     def _is_saving(self) -> bool:
         thread = getattr(self, "_saving_thread", None)

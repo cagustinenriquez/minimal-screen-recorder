@@ -9,6 +9,8 @@ Checks that:
   - the recording timer stops counting while paused
   - closing the window while a recording is being saved waits for the save
     (closing mid-save cut a 21-minute video in half in 2.1.4)
+  - the delayed backup cleanup after Stop doesn't touch a recording started
+    meanwhile (it removed the sound of a recording started 30 s after Stop)
 """
 
 import os
@@ -166,9 +168,37 @@ def closing_test():
     record("app closes by itself once saved", not alive())
 
 
+def backup_cleanup_test():
+    import threading
+
+    def run(new_recording_started):
+        root = tk.Tk()
+        root.withdraw()
+        app = SimpleNamespace(root=root, logger=SimpleNamespace(warning=lambda m: None))
+        app._session = 1
+        app.BACKUP_CLEANUP_MS = 200
+        app.recorder = SimpleNamespace(recording=False)  # still starting up
+        app.start_btn = tk.Button(root, state=tk.DISABLED)
+        cleaned = []
+        app._cleanup_recording = lambda: cleaned.append(True)
+        finished = threading.Thread(target=lambda: None)
+        finished.start()
+        finished.join()
+        RecorderApp._schedule_backup_cleanup(app, finished, "after stop")
+        if new_recording_started:
+            app._session += 1  # Start pressed before the 30 s are up
+        pump(root, 0.6)
+        root.destroy()
+        return bool(cleaned)
+
+    record("backup cleanup leaves a new recording alone", not run(True))
+    record("backup cleanup still re-enables buttons when needed", run(False))
+
+
 try:
     main()
     closing_test()
+    backup_cleanup_test()
 except Exception as e:  # noqa: BLE001
     import traceback
     traceback.print_exc()
